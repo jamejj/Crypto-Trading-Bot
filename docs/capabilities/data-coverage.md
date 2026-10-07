@@ -1,0 +1,57 @@
+# P00.3 — pokrycie danych Crypto.com
+
+Data assessmentu: **2026-10-07 (Europe/Warsaw)**. Zakres: dokumentacja i publiczne odczyty, bez kluczy, danych konta, UAT trading, collectorów ani zakupów danych. Wymagania: [specyfikacja v1.1](../2026-10-06-crypto-trading-bot-technical-design-v1.1.md), §4–5, §6 i §8 oraz [P00](../superpowers/plans/2026-10-07-crypto-trading-bot-v1-implementation-plan.md).
+
+**V10 = UNKNOWN; zależna bramka badań/live = BLOCKED.** Nie udowodniono kompletności 24 miesięcy PIT universe, transakcji, L2, trigger reference, historycznych reguł i fee. Nie jest to stwierdzenie, że dane nie istnieją. Nie wykonano pełnego pobrania ani badania edge. Dokument nie zmniejsza wymagań badań i nie otwiera P01.
+
+## Znaczenie dowodów
+
+- **DOCUMENTED**: oficjalny opis kontraktu lub funkcji. Nie stanowi pomiaru retencji ani sukcesu UAT.
+- **OBSERVED**: ograniczona rzeczywista odpowiedź publiczna lub widoczny stan UI, z zakresem opisanym poniżej. Nie potwierdza dostępności dla konta.
+- **runtime UNKNOWN**: brak pomiaru lub kompletnego artefaktu. Statusy capability to wyłącznie PASS / FAIL / UNKNOWN / DISABLED_VERIFIED. BLOCKED jest decyzją bramki, nie dodatkowym statusem capability.
+
+## Manifest źródeł i okresów
+
+Wszystkie endpointy poniżej dotyczą **Exchange v1**, produkcji `https://api.crypto.com/exchange/v1/` i publicznego feedu `wss://stream.crypto.com/exchange/v1/market`. GEN4 FCM/DCM/Prediction preview to inne produkty; identyczna nazwa metody nie przenosi ich retencji ani możliwości na crypto spot. UAT ma osobne hosty i dane. Oficjalne adresy opisuje [Exchange v1](https://exchange-developer.crypto.com/exchange/v1/docs/api/rest/crypto-com-exchange-api-v-1).
+
+| Dane / źródło | DOCUMENTED | Okres rzeczywiście potwierdzony / brak dowodu | Konsekwencja |
+|---|---|---|---|
+| OHLCV — [public/get-candlestick](https://exchange-developer.crypto.com/exchange/v1/docs/api/rest/public-get-candlestick) | 1m i 5m m.in.; `count` domyślnie 25, `start_ts` domyślnie dzień temu, `end_ts` teraz; OHLCV + początek świecy w ms | Dokument nie podaje gwarancji 24m, najstarszego rekordu, finalności/revisions ani `received_at`. Runtime retencja/kompletność UNKNOWN | Historyczny backfill wymaga kontroli granic, luk, duplikatów i rewizji. Bez czasu odbioru tylko modeled availability |
+| Publiczne transakcje — [public/get-trades](https://exchange-developer.crypto.com/exchange/v1/docs/api/rest/public-get-trades) | Maks. 150 rekordów; okno zapytania maks. 7 dni; start inclusive/end exclusive; ns zalecane dla paginacji; trade ID/match ID i timestamp ms/ns | **7 dni jest limitem okna zapytania, nie dowodem retencji 7 dni ani 24m.** Najstarsza dostępność, tie handling i kompletność backfillu UNKNOWN | Paginacja po timestampach musi zachować wszystkie rekordy z takim samym czasem i deduplikować po tożsamości; bez pełnego dowodu nie twierdzić B1 |
+| Feed transakcji — [trade](https://exchange-developer.crypto.com/exchange/v1/docs/api/websocket-single-page/) | Subskrypcja zwraca ostatnie 50 transakcji oraz napływające zdarzenia | Brak archiwum lokalnego; długość catch-up nie dowodzi ciągłości po outage | Przyszły capture wymaga UTC odbioru, `available_at`, watermark, kontroli luk i jawnego warmup |
+| L2/BBO — [public/get-book](https://exchange-developer.crypto.com/exchange/v1/docs/api/rest/public-get-book), feed `book.{instrument}.{depth}` | REST: bieżący snapshot do 50 poziomów. Feed rozróżnia snapshot i delta. [Changelog](https://exchange-developer.crypto.com/exchange/v1/docs/api/rest-change-log) opisuje wycofanie starego default book i 100ms full snapshot | Nie znaleziono w odczytanym kontrakcie historycznego endpointu L2. Nie ma pobranego, zwalidowanego 24m archiwum BBO/L2 | Snapshot dzisiaj nie odtwarza książki w przeszłości ani kolejki. Sampling nie dowodzi FOK fill; historyczne slippage pozostaje modelowane |
+| Trigger reference — [public/get-valuations](https://exchange-developer.crypto.com/exchange/v1/docs/api/rest/public-get-valuations), kanały index/mark | Valuations: index/mark per minuta, dodatkowo funding; `start_ts` dla większości typów domyślnie dzień temu, funding history 30 dni | Default zakres nie jest gwarancją retencji. Nie potwierdzono właściwego reference instrumentu/triggera spot i 24m historii | Last trade nie zastępuje bez oznaczenia index/mark. Historyczny model stopa czeka na V03 i właściwy reference mapping |
+| Reguły instrumentów — [public/get-instruments](https://exchange-developer.crypto.com/exchange/v1/docs/api/rest/public-get-instruments) | Bieżący katalog, tick/precision, typ, quote, status | OBSERVED: jeden produkcyjny snapshot opisany poniżej. Brak wersjonowanych zmian tick/minimum/status i pełnej listy delisted z 24m | Dzisiejsza lista nie jest PIT universe; `tradable` nie potwierdza uprawnień konta ani no-debt |
+| Listing/delist/halt — [ogłoszenia Exchange](https://crypto.com/exchange/announcements), [reguły admission/removal](https://help.crypto.com/en/articles/9652330-token-admission-and-removal-rules-and-criteria) | Provider opisuje informowanie klientów o zawieszeniu/usunięciu; changelog wspomina `public/get-announcements` | Nie wykonano inwentaryzacji całej historii ogłoszeń, revisions/first-seen ani ustalenia pełnego effective timeline wszystkich rynków | Ogłoszenie ≠ pierwszy rzeczywisty handel. Brak `first_seen_at` oznacza modeled availability. Brak backdated finalnej listy zwycięzców |
+| Fees — [Fees & Limits](https://crypto.com/exchange/document/fees-limits), private fee-rate methods | Bieżący cennik i kontrakt prywatnych stawek istnieją; tier/discount zależą od konta | Konto, tier, waluty fee i historia zmian/promocji UNKNOWN; endpointów prywatnych nie wywoływano | B0 także wymaga historycznych metadata/fee. Bieżący cennik nie jest historyczną stawką; baseline taker bez domniemanego stakingu/rabatu |
+| FX — [NBP API](https://api.nbp.pl/en.html), [ECB reference rates](https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html) | NBP historia kursów od 2002-01-02, maks. 93 dni/zapytanie; ECB publikacja zwykle ok. 16:00 CET w dni robocze poza zamknięciami TARGET | Dokumentowane źródła wystarczają czasowo dla 24m fiat reference; pełne pliki z PIT publikacją/odbiorami niepobrane | Nie są feedem FX 24/7 ani wykonalną ceną przewalutowania; patrz [profil Q](quote-profile.md) |
+
+## Archiwum download/UI, koszt i licencja
+
+**OBSERVED:** publiczny URL `https://crypto.com/exchange/data` przy próbie 2026-10-07 w IAB przekierował do `https://crypto.com/exchange/`. Odczytano home, footer i rozwinięte More; nie pokazywały publicznego katalogu plików historycznych. To nie jest dowód nieistnienia archiwum. Nie zalogowano się, nie odwiedzano wallet/account, nie pobierano eksportu konta, nie zaakceptowano umowy ani nie kupiono danych. Najwcześniejsza/najnowsza data, lista instrumentów, schema, checksumy, delisted coverage i warunki download pozostają **UNKNOWN**.
+
+Oficjalny [eksport Transaction History](https://help.crypto.com/en/articles/4837927-how-do-i-export-my-transaction-history-exchange) opisuje historię **własnych** zleceń/transakcji od 2022-11-01 i limity eksportów (m.in. 65 000 rekordów). Nie jest publicznym archiwum wszystkich market trades ani L2; nie użyto go w P00. Wykres cenowy/TradingView też nie daje dowodu kompletnego market datasetu.
+
+Opłaty za publiczne odczyty nie zostały udokumentowane jako zakup danych; cena archiwum/providerów, limity download i prawa użycia/redystrybucji są UNKNOWN. [Oficjalne Exchange T&C](https://static2.crypto.com/exchange/assets/documents/tnc.pdf), §13, zawierają ograniczenia dotyczące Exchange Materials/Market Data. Przed pełnym download/use trzeba ustalić aktualne warunki właściwe dla jurysdykcji i źródła. **Publiczny dostęp HTTP nie oznacza licencji do publikacji danych.** Publiczne repo zawiera opis i hashe dowodów, bez raw market payloadów, kont/secrets czy danych kupionych. Nie kontaktowano supportu i nie proszono o zgodę dostawcy.
+
+## Obserwacja punktowa i granice evidence
+
+Produkcja: publiczny `GET /public/get-instruments`, odpowiedź 2026-10-06 około 22:24:58 UTC (lokalnie 2026-10-07 00:24:58), HTTP 200 / `code=0`. 989 rekordów, z czego 570 `CCY_PAIR`; quote count: USD 415, USDT 123, BTC 14, EUR 7, CRO 4, PYUSD 5, ETH 2; brak quote USDC. SHA-256 raw publicznej odpowiedzi: `f271fc0236caf43606f582ca3913d0a08f587885ee3ea0fe97d8695b61ae4161`. Są to liczby rekordów, nie liczba rynków dostępnych kontu ani historyczna płynność. Temp raw poza Git; rejestr odczytów i inne próbki: [evidence-policy](evidence-policy.md).
+
+UAT tego samego endpointu: HTTP 200 / `code=0`, 1268 rekordów, 800 `CCY_PAIR`; hash `3526611531af19460d879456f8f4a4a0b99d1217d9d1399aedf43d1547edc5da`. To publiczna dostępność hosta i odmienny katalog, **nie dostęp do UAT konta ani udany test UAT**. Nie przenosić katalogu, liquidity, retencji czy semantyki UAT na produkcję.
+
+Dokumenty get-trades/get-book/get-valuations odczytano z właściwego Exchange v1 także przez IAB, gdy narzędzie web nie mogło otworzyć tych stron. Wyszukiwarka podsuwała GEN4 FCM preview — ich parametrów nie użyto jako dowodu Exchange v1. W tej części assessmentu terminalowy odczyt API miał błąd DNS; nie przypisano mu statusu FAIL usługi. Wykorzystano udaną publiczną odpowiedź z wspólnego P00 opisaną powyżej. Nie uruchomiono własnego ciągłego feedu ani collectora.
+
+## Bramka 24m i plan dowodu
+
+Nominalny 24m zakres do późniejszej weryfikacji, kończący się na ostatniej pełnej granicy dnia UTC przed obserwacją 2026-10-06 około 22:25 UTC, to `[2024-10-06T00:00:00Z, 2026-10-06T00:00:00Z)`. To wymagany zakres audytu, **nie okres obserwacyjnie potwierdzony w P00**. Lokalna data 2026-10-07 nie daje dostępu do przyszłej względem snapshotu granicy `2026-10-07T00:00:00Z`. Finalne granice i holdout zostają zamrożone przed badaniami. Pojedyncza stara świeca lub trade nie zalicza całego okresu. Manifest musi objąć rynki istniejące w poszczególnych chwilach, w tym failed/delisted, i wcześniejszy warmup 30 dni, gdzie jest wymagany.
+
+Przed PASS V10 wymagane:
+
+1. Manifest źródła/licencji/kosztu, plików i checksumów oraz granic najstarszej/najnowszej obserwacji **na każdy instrument i typ danych**. Paginacja i metadane endpointu są częścią lineage.
+2. Coverage tabeli instrument×dzień×typ: liczba oczekiwanych/obserwowanych świec, luki, outages vs zdrowe zero-trade, powód wyłączenia, delisted i migracje tokena. Brak imputacji przyszłą ceną.
+3. Historyczne effective/available timeline reguł, fee i uprawnień; nie nadpisywać `/USDC` nowym `/USD` bez potwierdzonego mappingu i dat (patrz USD Bundle).
+4. Jawna availability: event/receive/available time i rewizje. Dla historycznych plików bez odbiorów modeled latency, stress oraz niższy poziom dowodu; nie fikcyjne PIT timestamps.
+5. L2 sequence gaps, snapshot/delta continuity i właściwy trigger reference w zakresie używanym do B1; brak kolejki nie oznacza gwarancji fillu FOK. B2 wymaga niezależnych przyszłych capture/paper i kontraktów UAT.
+
+Obecny assessment identyfikuje kandydatów do **screeningu B0**, ale nawet kompletny B0 nie został jeszcze zbudowany: historyczne fee/metadata pozostają UNKNOWN. B1/B2 niezaliczone. Capture od przyszłego startu może zmniejszać nowe luki; nie odtworzy utraconych 24m. Druga giełda nie zastępuje historii wykonania Crypto.com. Termin ponownej oceny: przed pierwszym użyciem datasetu w badaniach i przed P07/P10; zmiana endpointu, quote mappingu, schematu, licencji lub źródła wymusza ponowną ocenę.
