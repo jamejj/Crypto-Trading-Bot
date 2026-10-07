@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# P01 local capture/research artifacts and property-test cache
+/artifacts/
+/raw_data/
+.hypothesis/
+*.raw
+.env.*

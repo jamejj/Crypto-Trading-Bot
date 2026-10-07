@@ -10,7 +10,7 @@
 
 **Spec:** [Technical Design v1.1 — po self-review 2026-10-07](../../2026-10-06-crypto-trading-bot-technical-design-v1.1.md).
 
-**Status:** Plan P00–P14 zatwierdzony przez użytkownika; obecne upoważnienie do wykonania obejmuje wyłącznie P00. P01 i dalsze etapy wymagają kolejnej zgody. Prace prowadzone w repozytorium `jamejj/Crypto-Trading-Bot`, na gałęzi `codex/p00-capability-assessment`. P00 obejmuje dokumenty i publiczne read-only obserwacje; nie utworzono kodu bota ani środowiska tradingowego. Wynik odbioru: [P00 evidence](../../capabilities/evidence-policy.md).
+**Status:** Plan P00–P14 zatwierdzony przez użytkownika. P00 scalono w PR #1 (merge `494baf1`); użytkownik następnie dopuścił wykonanie wyłącznie P01.1–P01.5 na gałęzi `codex/p01-foundation`. P01 zakończono: G1 PASS wyłącznie dla fundamentu offline. P02 i dalsze etapy wymagają kolejnej zgody. Wyniki odbioru: [P00 evidence](../../capabilities/evidence-policy.md), [P01 / G1](../../runbooks/p01-foundation.md).
 
 ## Global Constraints
 
@@ -42,7 +42,7 @@ Pięć szczególnie zdradliwych klas wejść ma dedykowane testy w zadaniach, ni
 
 ## 1. Organizacja wykonania i bramki
 
-Plan ma jeden wspólny kontrakt typów i testów, a etapy są niezależnymi punktami odbioru. Nie dzielimy projektu na równoległe, niezgodne implementacje ledger/risk/backtest. P00 jest assessmentem; P01–P12 opisują przyszłe prace offline/UAT/read-only; zgodnie z aktualną decyzją użytkownika ich rozpoczęcie wymaga kolejnej zgody po P00. P13 i P14 wymagają kolejnych decyzji opisanych w ich sekcjach.
+Plan ma jeden wspólny kontrakt typów i testów, a etapy są niezależnymi punktami odbioru. Nie dzielimy projektu na równoległe, niezgodne implementacje ledger/risk/backtest. P00 jest zakończonym assessmentem. P01 otrzymało osobną zgodę po merge P00; P02–P12 pozostają przyszłymi pracami wymagającymi kolejnej zgody. Zgoda na P01 obejmuje wyłącznie fundament offline i publiczny read-only capture. P13 i P14 wymagają kolejnych decyzji opisanych w ich sekcjach.
 
 | Etap | Dostarczany wynik | Zależności | Bramka |
 |---|---|---|---|
@@ -72,7 +72,7 @@ Testy P00 i etapy dowodowe nie wymagają sztucznego TDD dokumentów. Niedostępn
 
 ## 2. Mapa przyszłych plików i odpowiedzialności
 
-Ścieżki w planie są względem katalogu projektu. To deklaracja przyszłej struktury; pliki poza dokumentacją jeszcze nie istnieją.
+Ścieżki w planie są względem katalogu projektu. To mapa docelowej struktury; w P01 powstają wyłącznie wskazane w tym etapie kontrakty, profile, clock, raw capture oraz ich testy.
 
 | Obszar | Katalog / pliki | Odpowiedzialność |
 |---|---|---|
@@ -157,11 +157,13 @@ Dodatkowe identyfikatory (`SetupId`, `IntentId`, `RunId`, `Cursor`) są typowany
 
 **Małe zadania:**
 
-- [ ] P01.1: dopiero po zatwierdzeniu planu sprawdzić zastany stan Git i instrukcje workspace, zachować metadane aplikacji, a następnie utworzyć pakiet wraz z failing testami serializacji Decimal, walut i UTC. Test `test_money_currency_mismatch_rejected` odrzuca dodanie Q do base; `test_precision_round_trip` zachowuje dokładną wartość przez zapis/odczyt.
-- [ ] P01.2: testy `test_live_profile_incomplete_denied`, `test_paper_rejects_production_trade_transport`, `test_risk_thresholds_not_search_parameters`: niepełne V, credential scope i próba search 6/9/12 kończą się jawnym błędem. Dodać walidację profili oraz hash/version.
-- [ ] P01.3: test `test_utc_jump_does_not_extend_monotonic_deadline` oraz deterministic timer replay; zaimplementować Clock i envelope serialization bez I/O giełdy w domenie.
-- [ ] P01.4: testy fake public feed z duplicate i reconnect; minimalny raw collector zapisuje oryginalny payload, odebranie i gap marker, nie generuje sygnałów. Może użyć jedynie read-only źródła potwierdzonego w P00; reszta public adaptera powstaje w P06.
-- [ ] P01.5: uruchomić `pytest tests/unit/test_contracts.py tests/unit/test_profiles.py tests/unit/test_clock.py tests/unit/test_raw_capture.py -q` oraz `ruff check src tests`; oczekiwane PASS/0 violations. Zablokować sprawdzone wersje w lockfile, dodać README i commit.
+- [x] P01.1: dopiero po zatwierdzeniu planu sprawdzić zastany stan Git i instrukcje workspace, zachować metadane aplikacji, a następnie utworzyć pakiet wraz z failing testami serializacji Decimal, walut i UTC. Test `test_money_currency_mismatch_rejected` odrzuca dodanie Q do base; `test_precision_round_trip` zachowuje dokładną wartość przez zapis/odczyt.
+- [x] P01.2: testy `test_live_profile_incomplete_denied`, `test_paper_rejects_production_trade_transport`, `test_risk_thresholds_not_search_parameters`: niepełne V, credential scope i próba search 6/9/12 kończą się jawnym błędem. Dodać walidację profili oraz hash/version.
+- [x] P01.3: test `test_utc_jump_does_not_extend_monotonic_deadline` oraz deterministic timer replay; zaimplementować Clock i envelope serialization bez I/O giełdy w domenie.
+- [x] P01.4: testy fake public feed z duplicate i reconnect; minimalny raw collector zapisuje oryginalny payload, odebranie i gap marker, nie generuje sygnałów. Może użyć jedynie read-only źródła potwierdzonego w P00; reszta public adaptera powstaje w P06.
+- [x] P01.5: uruchomić `pytest tests/unit/test_contracts.py tests/unit/test_profiles.py tests/unit/test_clock.py tests/unit/test_raw_capture.py -q` oraz `ruff check src tests`; oczekiwane PASS/0 violations. Zablokować sprawdzone wersje w lockfile, dodać README i commit.
+
+**Odbiór P01:** G1 PASS offline; 76 testów PASS, Ruff bez naruszeń, publiczny smoke i niezależny review zakończone. Szczegóły, TDD i ograniczenia: [runbook P01](../../runbooks/p01-foundation.md). P02 nie rozpoczęto.
 
 **DoD:** deterministyczne rekordy/profile, pomyślny offline smoke test, brak side-effectów przy imporcie. Capture może działać od tego momentu jako oddzielny read-only proces i musi pokazywać pokrycie/braki.
 
