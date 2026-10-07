@@ -1,0 +1,36 @@
+# P01 offline foundation. SYNTH_Q has no assumed fiat/stablecoin parity.
+[execution]
+schema_version = 1
+environment = "paper"
+account_id = "offline-synthetic"
+quote_currency = "synthetic:SYNTH_Q"
+credential_scope = "none"
+trade_transport = "none"
+runtime_status = "INCOMPLETE"
+quote_profile_complete = false
+public_endpoints = ["https://api.crypto.com/exchange/v1/public/get-instruments"]
+
+[risk]
+schema_version = 1
+caution_drawdown = "0.06"
+defensive_drawdown = "0.09"
+hard_pause_drawdown = "0.12"
+risk_per_entry = "0.01"
+aggregate_planned_risk = "0.02"
+max_positions = 2
+max_asset_exposure = "0.50"
+max_total_exposure = "0.90"
+normal_multiplier = "1.00"
+caution_multiplier = "0.70"
+defensive_multiplier = "0.40"
+
+[research]
+schema_version = 1
+baseline = "R0"
+timeframe_seconds = 300
+time_exit_boundaries = 24
+variants = ["A", "B"]
+dataset_id = "synthetic-offline"
+split_manifest_hash = "UNFROZEN"
+metric_manifest_hash = "UNFROZEN"
+search_parameters = []
