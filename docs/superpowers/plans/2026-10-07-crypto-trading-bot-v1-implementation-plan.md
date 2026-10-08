@@ -10,7 +10,7 @@
 
 **Spec:** [Technical Design v1.1 — po self-review 2026-10-07](../../2026-10-06-crypto-trading-bot-technical-design-v1.1.md).
 
-**Status:** Plan P00–P14 zatwierdzony przez użytkownika. P00 scalono w PR #1 (merge `494baf1`); użytkownik następnie dopuścił wykonanie wyłącznie P01.1–P01.5 na gałęzi `codex/p01-foundation`. P01 zakończono: G1 PASS wyłącznie dla fundamentu offline. P02 i dalsze etapy wymagają kolejnej zgody. Wyniki odbioru: [P00 evidence](../../capabilities/evidence-policy.md), [P01 / G1](../../runbooks/p01-foundation.md).
+**Status:** Plan P00–P14 zatwierdzony przez użytkownika. P00 scalono w PR #1 (merge `494baf1`); użytkownik następnie dopuścił wykonanie wyłącznie P01.1–P01.5 na gałęzi `codex/p01-foundation`. P01 zakończono: G1 PASS wyłącznie dla fundamentu offline. P01 zaakceptowano i scalono do main (`255aa33`); użytkownik upoważnił wyłącznie P02.1–P02.5 na gałęzi `codex/p02-accounting-ledger`. P02 zakończono: G2 PASS offline; [raport P02](../../runbooks/p02-accounting-ledger.md). P03 i dalsze etapy wymagają kolejnej zgody. Wyniki odbioru: [P00 evidence](../../capabilities/evidence-policy.md), [P01 / G1](../../runbooks/p01-foundation.md).
 
 ## Global Constraints
 
@@ -42,7 +42,7 @@ Pięć szczególnie zdradliwych klas wejść ma dedykowane testy w zadaniach, ni
 
 ## 1. Organizacja wykonania i bramki
 
-Plan ma jeden wspólny kontrakt typów i testów, a etapy są niezależnymi punktami odbioru. Nie dzielimy projektu na równoległe, niezgodne implementacje ledger/risk/backtest. P00 jest zakończonym assessmentem. P01 otrzymało osobną zgodę po merge P00; P02–P12 pozostają przyszłymi pracami wymagającymi kolejnej zgody. Zgoda na P01 obejmuje wyłącznie fundament offline i publiczny read-only capture. P13 i P14 wymagają kolejnych decyzji opisanych w ich sekcjach.
+Plan ma jeden wspólny kontrakt typów i testów, a etapy są niezależnymi punktami odbioru. Nie dzielimy projektu na równoległe, niezgodne implementacje ledger/risk/backtest. P00 jest zakończonym assessmentem. P01 otrzymało osobną zgodę po merge P00; P02 otrzymało osobną zgodę po merge P01; P03–P12 pozostają przyszłymi pracami wymagającymi kolejnej zgody. Zgoda na P02 obejmuje accounting/ledger i testy lokalnego PostgreSQL. P13 i P14 wymagają kolejnych decyzji opisanych w ich sekcjach.
 
 | Etap | Dostarczany wynik | Zależności | Bramka |
 |---|---|---|---|
@@ -179,11 +179,13 @@ Dodatkowe identyfikatory (`SetupId`, `IntentId`, `RunId`, `Cursor`) są typowany
 
 **Małe zadania:**
 
-- [ ] P02.1: failing tests `test_same_fill_from_ws_and_rest_posts_once`, `test_fill_fee_in_base_changes_sellable_quantity`, `test_fee_revision_posts_delta_not_second_fill`; dodać ledger postings i dedup key scoped account/instrument.
-- [ ] P02.2: testy rezerwacji wolnych/zajętych Q i fee currency, częściowej konwersji pending→inventory oraz terminalnego zwolnienia. Nie zwalniać na timeout ani na samo cancel ACK.
-- [ ] P02.3: `test_deposit_preserves_unit_nav_and_hwm`, `test_reserved_cash_not_double_counted`, `test_unpriced_asset_marks_nav_uncertain`, `test_dust_remains_in_inventory`; zaimplementować NAV i lots z jawnie przypisanymi fee.
-- [ ] P02.4: property tests bilansowania per currency i odtwarzania stanu po dowolnym legalnym ciągu zdarzeń; integration rollback po awarii między wpisem ledger a projekcją.
-- [ ] P02.5: `pytest tests/unit/test_ledger.py tests/unit/test_nav.py tests/property/test_accounting_invariants.py tests/integration/test_ledger_transactions.py -q`; PASS także na prawdziwym lokalnym PostgreSQL, nie tylko mocku. Review i commit.
+- [x] P02.1: failing tests `test_same_fill_from_ws_and_rest_posts_once`, `test_fill_fee_in_base_changes_sellable_quantity`, `test_fee_revision_posts_delta_not_second_fill`; dodać ledger postings i dedup key scoped account/instrument.
+- [x] P02.2: testy rezerwacji wolnych/zajętych Q i fee currency, częściowej konwersji pending→inventory oraz terminalnego zwolnienia. Nie zwalniać na timeout ani na samo cancel ACK.
+- [x] P02.3: `test_deposit_preserves_unit_nav_and_hwm`, `test_reserved_cash_not_double_counted`, `test_unpriced_asset_marks_nav_uncertain`, `test_dust_remains_in_inventory`; zaimplementować NAV i lots z jawnie przypisanymi fee.
+- [x] P02.4: property tests bilansowania per currency i odtwarzania stanu po dowolnym legalnym ciągu zdarzeń; integration rollback po awarii między wpisem ledger a projekcją.
+- [x] P02.5: `pytest tests/unit/test_ledger.py tests/unit/test_nav.py tests/property/test_accounting_invariants.py tests/integration/test_ledger_transactions.py -q`; PASS także na prawdziwym lokalnym PostgreSQL, nie tylko mocku. Review i commit.
+
+**Odbiór P02 (2026-10-08):** G2 PASS offline. Pełny suite: 131 PASS; P02: 46 unit, 2 property, 7 real PostgreSQL integration PASS. Ruff bez naruszeń; self-review i niezależny review zakończone. Ograniczenia i regresje: [runbook P02](../../runbooks/p02-accounting-ledger.md). P03 nie rozpoczęto.
 
 **DoD:** wszystkie fille/fee/rezerwacje audytowalne, powtórzenie eventów nie zmienia wynikowego majątku, migracja i replay odbudowują identyczny snapshot.
 

@@ -79,7 +79,7 @@ def _encode(value):
     if is_dataclass(value):
         return {
             "$type": type(value).__name__,
-            "$schema": 1,
+            "$schema": getattr(type(value), "SCHEMA_VERSION", 1),
             **{f.name: _encode(getattr(value, f.name)) for f in fields(value)},
         }
     if isinstance(value, tuple):
@@ -100,11 +100,13 @@ def _decode(value):
         if set(value) == {"$utc"}:
             return utc(datetime.fromisoformat(value["$utc"]))
         if "$type" in value:
-            if type(value.get("$schema")) is not int or value["$schema"] != 1:
-                raise ValueError("unsupported record wire schema")
             kind = _TYPES.get(value["$type"])
             if kind is None:
                 raise ValueError("unknown record type")
+            if type(value.get("$schema")) is not int or value["$schema"] not in getattr(
+                kind, "READABLE_SCHEMAS", (1,)
+            ):
+                raise ValueError("unsupported record wire schema")
             return kind(
                 **{
                     key: _decode(item)
