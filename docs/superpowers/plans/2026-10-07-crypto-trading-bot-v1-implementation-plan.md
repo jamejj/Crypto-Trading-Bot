@@ -10,7 +10,7 @@
 
 **Spec:** [Technical Design v1.1 — po self-review 2026-10-07](../../2026-10-06-crypto-trading-bot-technical-design-v1.1.md).
 
-**Status:** Plan P00–P14 zatwierdzony przez użytkownika. P00 scalono w PR #1 (merge `494baf1`); użytkownik następnie dopuścił wykonanie wyłącznie P01.1–P01.5 na gałęzi `codex/p01-foundation`. P01 zakończono: G1 PASS wyłącznie dla fundamentu offline. P01 zaakceptowano i scalono do main (`255aa33`); użytkownik upoważnił wyłącznie P02.1–P02.5 na gałęzi `codex/p02-accounting-ledger`. P02 zakończono: G2 PASS offline; [raport P02](../../runbooks/p02-accounting-ledger.md). P02 zaakceptowano i scalono w PR #2 (`7cc3577`). Użytkownik dopuścił P03.1–P03.2, następnie osobno P03.3–P03.4; P03.5–P03.6 i P04 wymagają kolejnej zgody. Raport: [P03.1–P03.2](../../runbooks/p03-1-2-execution-lifecycle.md). Wyniki odbioru: [P00 evidence](../../capabilities/evidence-policy.md), [P01 / G1](../../runbooks/p01-foundation.md).
+**Status:** Plan P00–P14 zatwierdzony przez użytkownika. P00 scalono w PR #1 (merge `494baf1`); użytkownik następnie dopuścił wykonanie wyłącznie P01.1–P01.5 na gałęzi `codex/p01-foundation`. P01 zakończono: G1 PASS wyłącznie dla fundamentu offline. P01 zaakceptowano i scalono do main (`255aa33`); użytkownik upoważnił wyłącznie P02.1–P02.5 na gałęzi `codex/p02-accounting-ledger`. P02 zakończono: G2 PASS offline; [raport P02](../../runbooks/p02-accounting-ledger.md). P02 zaakceptowano i scalono w PR #2 (`7cc3577`). Użytkownik dopuścił P03.1–P03.2, następnie osobno P03.3–P03.4; Następnie użytkownik zatwierdził wyłącznie P03.5, bez merge; P03.6 i P04 wymagają kolejnej zgody. Raport: [P03.1–P03.2](../../runbooks/p03-1-2-execution-lifecycle.md). Wyniki odbioru: [P00 evidence](../../capabilities/evidence-policy.md), [P01 / G1](../../runbooks/p01-foundation.md).
 
 ## Global Constraints
 
@@ -42,7 +42,7 @@ Pięć szczególnie zdradliwych klas wejść ma dedykowane testy w zadaniach, ni
 
 ## 1. Organizacja wykonania i bramki
 
-Plan ma jeden wspólny kontrakt typów i testów, a etapy są niezależnymi punktami odbioru. Nie dzielimy projektu na równoległe, niezgodne implementacje ledger/risk/backtest. P00 jest zakończonym assessmentem. P01 otrzymało osobną zgodę po merge P00; P02 otrzymało osobną zgodę po merge P01; P03 dopuszczono w zakresie P03.1–P03.2 po merge P02, następnie osobno P03.3–P03.4; P03.5–P03.6 i P04–P12 wymagają kolejnej zgody. Zgoda na P02 obejmuje accounting/ledger i testy lokalnego PostgreSQL. P13 i P14 wymagają kolejnych decyzji opisanych w ich sekcjach.
+Plan ma jeden wspólny kontrakt typów i testów, a etapy są niezależnymi punktami odbioru. Nie dzielimy projektu na równoległe, niezgodne implementacje ledger/risk/backtest. P00 jest zakończonym assessmentem. P01 otrzymało osobną zgodę po merge P00; P02 otrzymało osobną zgodę po merge P01; P03 dopuszczono w zakresie P03.1–P03.2 po merge P02, następnie osobno P03.3–P03.4; Następnie osobno dopuszczono P03.5 na istniejącej gałęzi, bez merge; P03.6 i P04–P12 wymagają kolejnej zgody. Zgoda na P02 obejmuje accounting/ledger i testy lokalnego PostgreSQL. P13 i P14 wymagają kolejnych decyzji opisanych w ich sekcjach.
 
 | Etap | Dostarczany wynik | Zależności | Bramka |
 |---|---|---|---|
@@ -205,10 +205,10 @@ Dodatkowe identyfikatory (`SetupId`, `IntentId`, `RunId`, `Cursor`) są typowany
 - [x] P03.2: testy fill-before-ACK, cancel-fill race, late canceled, repeated source observations i status regression. Reducer nie cofa inventory ani terminalnych skutków na podstawie starego komunikatu.
 - [x] P03.3: `test_multi_fill_fok_not_terminal_partial`, `test_new_fill_during_unknown_stop_does_not_duplicate_coverage`, `test_oldest_uncovered_deadline_not_reset`: serializacja protection i qty target. Small partial poniżej minimum zostaje uncovered, nie znika jako dust przed rozstrzygnięciem zlecenia.
 - [x] P03.4: testy obu jawnych exit policies na fake exchange; bez zweryfikowanego profilu brak komendy. `test_cancel_ack_is_not_sell_permission` i `test_stop_fill_during_soft_exit_prevents_oversell` dowodzą właściwej koordynacji.
-- [ ] P03.5: test dwóch dispatcherów oraz utraty ownership; pojedynczy writer i brak automatycznego takeover. Dodać runbook odcięcia starego procesu; DB lease nie jest jedyną ochroną przed drugim hostem.
+- [x] P03.5: test dwóch dispatcherów oraz utraty ownership; pojedynczy writer i brak automatycznego takeover. Dodać runbook odcięcia starego procesu; DB lease nie jest jedyną ochroną przed drugim hostem.
 - [ ] P03.6: `pytest tests/unit/test_order_reducer.py tests/unit/test_protection.py tests/unit/test_exit_coordinator.py tests/integration/test_intent_outbox.py tests/faults/test_dispatch_crashes.py -q`; review invariants E01–E05 i commit.
 
-**Częściowy odbiór (2026-10-08):** P03.1–P03.2 zakończono; [raport](../../runbooks/p03-1-2-execution-lifecycle.md). Narrow OrderState/ledger helper nie kończy jeszcze planowanego czystego interfejsu event/proposals. P03.3–P03.4 następnie zakończono na tej samej gałęzi bez resetu P03.1–P03.2; [raport protection/exits](../../runbooks/p03-3-4-protection-exits.md). Corrective review P03.3–P03.4 uzupełnia replacement oraz emergency exit przy NONE; [raport naprawczy](../../runbooks/p03-3-4-corrective-review.md). G3 pozostaje niezaliczone; P03.5–P03.6 nie rozpoczęto.
+**Częściowy odbiór (2026-10-08):** P03.1–P03.2 zakończono; [raport](../../runbooks/p03-1-2-execution-lifecycle.md). Narrow OrderState/ledger helper nie kończy jeszcze planowanego czystego interfejsu event/proposals. P03.3–P03.4 następnie zakończono na tej samej gałęzi bez resetu P03.1–P03.2; [raport protection/exits](../../runbooks/p03-3-4-protection-exits.md). Corrective review P03.3–P03.4 uzupełnia replacement oraz emergency exit przy NONE; [raport naprawczy](../../runbooks/p03-3-4-corrective-review.md). P03.5 wykonano na tej samej gałęzi: [ownership/fencing i runbook](../../runbooks/p03-5-writer-ownership.md). G3 pozostaje niezaliczone; P03.6 i P04 nie rozpoczęto.
 
 **DoD:** pełny lifecycle na fake exchange, brak duplicate economic effects i blind retries; okna uncovered oraz unresolved są jawne i mają trwałe deadlines.
 

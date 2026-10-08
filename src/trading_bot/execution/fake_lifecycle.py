@@ -6,12 +6,14 @@ from trading_bot.execution.absence import (
     SyntheticVenueOrder,
     SyntheticVenueSnapshot,
 )
+from trading_bot.execution.ownership import require_writer
 from trading_bot.execution.protection import command
 
 
 class FakeLifecycleExchange:
-    def __init__(self, source_id="synthetic:venue"):
+    def __init__(self, source_id="synthetic:venue", *, writer=None):
         self.source_id = source_id
+        self.writer = writer
         self.sequence = 0
         self._orders = {}
         self._trades = {}
@@ -63,6 +65,8 @@ class FakeLifecycleExchange:
         )
 
     def execute(self, repository, command_id, clock, *, absence=None):
+        require_writer(self.writer)
+        self.writer.check(repository.account)
         proposal, status = repository.get_command(command_id)
         if status != "PENDING":
             return False
@@ -71,7 +75,7 @@ class FakeLifecycleExchange:
         ):
             raise ValueError("synthetic venue snapshot generation changed")
         trigger = repository.get(proposal.instrument).context.trigger
-        result = repository.execute_fake(command_id, clock, absence=absence)
+        result = repository.execute_fake(command_id, clock, absence=absence, writer=self.writer)
         if result:
             self._record_effect(repository.account, proposal, trigger, clock.utc_now())
         return result

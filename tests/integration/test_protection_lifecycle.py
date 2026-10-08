@@ -5,7 +5,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from accounting_helpers import BTC, NOW, D, fill
-from execution_helpers import execution_module, execution_repo, prepare  # noqa: F401
+from execution_helpers import execution_module, execution_repo, prepare, writer  # noqa: F401
 
 from trading_bot.domain.money import Money, Quantity
 from trading_bot.domain.records import ExitRequest, OrderObservation
@@ -192,7 +192,7 @@ def test_native_linked_fake_atomic_exit_retires_stop_without_second_reservation(
     verify(lifecycle, "NATIVE_LINKED_VERIFIED")
     command = lifecycle.request_exit(request(), clock)[0]
     assert command.kind == "NATIVE_LINKED_EXIT"
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     fake.execute(lifecycle, command.command_id, clock)
     assert lifecycle.get(BTC).sell_status == "FILLED"
     assert lifecycle.get(BTC).context.protection.target.amount == 0
@@ -212,7 +212,7 @@ def test_lifecycle_audit_and_commands_are_immutable(lifecycle_repo):
 def test_serial_fake_market_sell_and_restart_never_duplicate(lifecycle_repo):
     lifecycle, repo, clock = confirmed(lifecycle_repo)
     verify(lifecycle, "SERIAL_CANCEL_THEN_MARKET_VERIFIED")
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     cancel = lifecycle.request_exit(request(), clock)[0]
     assert fake.execute(lifecycle, cancel.command_id, clock)
     assert lifecycle.request_exit(request(), clock) == []
@@ -242,11 +242,20 @@ def test_fake_storage_loss_leaves_unknown_sell_and_no_retry(lifecycle_repo):
             "CREATE TRIGGER fail BEFORE INSERT ON lifecycle_audit "
             "FOR EACH ROW EXECUTE FUNCTION fail_effect()"
         )
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     with pytest.raises(psycopg.Error, match="effect persistence failed"):
         fake.execute(lifecycle, proposal.command_id, clock)
     assert repo.ledger.snapshot == before
-    assert fake.execute(lifecycle, proposal.command_id, clock) is False
+    with pytest.raises(PermissionError, match="stopped"):
+        fake.execute(lifecycle, proposal.command_id, clock)
+    assert writer(repo).stopped
+    old = writer(repo)
+    ctl = old.control
+    receipt = ctl.authority.cut_off(old.token)
+    ctl.manual_revoke(old.token, receipt, "faulted writer manually isolated")
+    replacement = ctl.manual_takeover(old.token, receipt, "fixture", "replacement", "manual")
+    fresh = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=replacement)
+    assert fresh.execute(lifecycle, proposal.command_id, clock) is False
     assert lifecycle.get(BTC).sell_status == "UNKNOWN"
     assert lifecycle.get(BTC).context.protection.covered.amount == 0
     with connection() as conn:
@@ -282,7 +291,7 @@ def test_stale_native_command_after_stop_fill_does_not_oversell(lifecycle_repo):
     lifecycle.apply_stop_fill(
         replace(fill("stoprace", side="SELL", qty="1"), order_id=proposal.stop_id), clock
     )
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     with pytest.raises(ValueError, match="current net"):
         fake.execute(lifecycle, proposal.command_id, clock)
     assert sum(lot.quantity.amount for lot in repo.ledger.snapshot.inventory) == 3
@@ -316,13 +325,13 @@ def test_competing_base_reservation_in_other_market_blocks_duplicate_sell_right(
 
 
 def test_delayed_fake_cancel_ack_cannot_regress_terminal_or_block_prepared_sell(lifecycle_repo):
-    lifecycle, _, clock = confirmed(lifecycle_repo)
+    lifecycle, repo, clock = confirmed(lifecycle_repo)
     verify(lifecycle, "SERIAL_CANCEL_THEN_MARKET_VERIFIED")
     cancel = lifecycle.request_exit(request(), clock)[0]
     terminal = stop_observation(lifecycle.get(BTC), "CANCELED", "0", True)
     lifecycle.observe_stop(terminal, clock)
     sell = lifecycle.request_exit(request(), clock)[0]
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     fake.execute(lifecycle, cancel.command_id, clock)
     assert lifecycle.get(BTC).stop_observation == terminal
     assert fake.execute(lifecycle, sell.command_id, clock)
@@ -340,7 +349,7 @@ def test_observed_stop_never_replays_original_fake_create(lifecycle_repo, status
         else {}
     )
     lifecycle.observe_stop(observation, clock, **kwargs)
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     assert fake.execute(lifecycle, create.command_id, clock) is False
     assert lifecycle.get(BTC).context.stop_status == (
         "CONFIRMED" if status == "ACTIVE" else "CANCELED"
@@ -397,7 +406,7 @@ def test_confirmed_stop_growth_serial_replacement_or_overdue_exit(lifecycle_repo
         assert state.serial_deadline == deadline
         assert (
             execution_module("execution.fake_lifecycle")
-            .FakeLifecycleExchange()
+            .FakeLifecycleExchange(writer=writer(repo))
             .execute(lifecycle, replacement.command_id, clock)
         )
         assert lifecycle.get(BTC).context.protection.covered.amount == 4
@@ -417,7 +426,7 @@ def test_overdue_below_protection_minimum_positive_absence_emergency(lifecycle_r
     state = lifecycle.assess(BTC, clock)
     assert state.exit_request is not None
     assert lifecycle.commands(BTC) == []
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     fake.observe_trade(entry)
     evidence = fake.absence(
         "a", BTC, repo.ledger.snapshot.version, Quantity(D("2"), "BTC"), clock.utc_now()
@@ -455,7 +464,7 @@ def test_native_replacement_requires_own_verification_and_atomic_right_transfer(
         r for r in repo.ledger.snapshot.reservations if r.side == "SELL" and r.status == "PENDING"
     ]
     assert sum(r.quantity.amount for r in rights) == 4
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     assert fake.execute(lifecycle, proposal.command_id, clock)
     state = lifecycle.get(BTC)
     assert state.context.protection.covered.amount == 4
@@ -488,7 +497,7 @@ def test_native_overdue_undersized_stop_atomic_emergency(lifecycle_repo):
     assert len(commands) == 1
     assert (
         execution_module("execution.fake_lifecycle")
-        .FakeLifecycleExchange()
+        .FakeLifecycleExchange(writer=writer(repo))
         .execute(lifecycle, commands[0].command_id, clock)
     )
     assert lifecycle.get(BTC).context.protection.target.amount == 0
@@ -517,7 +526,7 @@ def test_completed_replacement_deadline_does_not_reopen_emergency(lifecycle_repo
         command_id = next(
             c.command_id for c in lifecycle.commands(BTC) if c.kind == "NATIVE_REPLACE_STOP"
         )
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     assert fake.execute(lifecycle, command_id, clock)
     count = len(lifecycle.commands(BTC))
     clock.clock.advance(D("6"))
@@ -557,7 +566,7 @@ def test_no_stop_absence_malformed_stale_or_ambiguous_blocks(lifecycle_repo, bad
     request = lifecycle.assess(BTC, clock).exit_request
     fake_module = execution_module("execution.fake_lifecycle")
     evidence_module = execution_module("execution.absence")
-    fake = fake_module.FakeLifecycleExchange()
+    fake = fake_module.FakeLifecycleExchange(writer=writer(repo))
     fake.observe_trade(entry)
     evidence = fake.absence(
         "a", BTC, repo.ledger.snapshot.version, Quantity(D("2"), "BTC"), clock.utc_now()
@@ -642,7 +651,7 @@ def test_stop_fill_during_replacement_preserves_fresh_inventory_and_no_oversell(
     lifecycle.apply_stop_fill(
         replace(fill("race", side="SELL", qty="1"), order_id=state.context.stop_id), clock
     )
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     if policy.startswith("SERIAL"):
         lifecycle.observe_stop(stop_observation(state, "CANCELED", "1", True), clock)
         state = lifecycle.assess(BTC, clock)
@@ -666,7 +675,7 @@ def test_absence_generation_change_before_effect_leaves_sell_unknown(lifecycle_r
     verify(lifecycle, "SERIAL_CANCEL_THEN_MARKET_VERIFIED")
     clock.clock.advance(D("6"))
     request = lifecycle.assess(BTC, clock).exit_request
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     fake.observe_trade(entry)
     evidence = fake.absence(
         "a", BTC, repo.ledger.snapshot.version, Quantity(D("2"), "BTC"), clock.utc_now()
@@ -744,12 +753,21 @@ def test_native_atomic_effect_failure_rolls_back_right_transfer_and_keeps_unknow
             "CREATE TRIGGER fail BEFORE INSERT ON lifecycle_commands "
             "FOR EACH ROW EXECUTE FUNCTION fail_transfer()"
         )
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     with pytest.raises(psycopg.Error, match="transfer persistence failed"):
         fake.execute(lifecycle, proposal.command_id, clock)
     assert repo.ledger.snapshot == before
     assert lifecycle.get(BTC).context.stop_status == "UNKNOWN"
-    assert fake.execute(lifecycle, proposal.command_id, clock) is False
+    with pytest.raises(PermissionError, match="stopped"):
+        fake.execute(lifecycle, proposal.command_id, clock)
+    assert writer(repo).stopped
+    old = writer(repo)
+    ctl = old.control
+    receipt = ctl.authority.cut_off(old.token)
+    ctl.manual_revoke(old.token, receipt, "faulted writer manually isolated")
+    replacement = ctl.manual_takeover(old.token, receipt, "fixture", "replacement", "manual")
+    fresh = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=replacement)
+    assert fresh.execute(lifecycle, proposal.command_id, clock) is False
 
 
 @pytest.mark.parametrize("lifecycle_repo", ["5"], indirect=True)
@@ -760,7 +778,7 @@ def test_absent_emergency_intent_failure_rolls_back_reservation(lifecycle_repo):
     verify(lifecycle, "SERIAL_CANCEL_THEN_MARKET_VERIFIED")
     clock.clock.advance(D("6"))
     request = lifecycle.assess(BTC, clock).exit_request
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     fake.observe_trade(entry)
     evidence = fake.absence(
         "a", BTC, repo.ledger.snapshot.version, Quantity(D("2"), "BTC"), clock.utc_now()
@@ -801,7 +819,7 @@ def test_pending_native_replacement_expiry_never_executes_or_parallel_sells(life
     assert not any(
         c.kind in {"MARKET_SELL", "NATIVE_EMERGENCY_EXIT"} for c in lifecycle.commands(BTC)
     )
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     with pytest.raises(ValueError, match="deadline"):
         fake.execute(lifecycle, proposal.command_id, clock)
     assert lifecycle.get(BTC).context.stop_status == "UNKNOWN"
@@ -836,7 +854,7 @@ def test_native_oversized_stop_after_late_fee_replaces_net_without_negative_righ
     assert proposal.quantity.amount == D("1.9")
     assert (
         execution_module("execution.fake_lifecycle")
-        .FakeLifecycleExchange()
+        .FakeLifecycleExchange(writer=writer(repo))
         .execute(lifecycle, proposal.command_id, clock)
     )
     assert lifecycle.get(BTC).context.protection.covered.amount == D("1.9")
@@ -875,7 +893,7 @@ def test_native_emergency_oversized_stop_uses_net_and_no_negative_increment(life
     assert proposal.quantity.amount == D("1.9")
     assert (
         execution_module("execution.fake_lifecycle")
-        .FakeLifecycleExchange()
+        .FakeLifecycleExchange(writer=writer(repo))
         .execute(lifecycle, proposal.command_id, clock)
     )
     assert all(lot.instrument != BTC for lot in repo.ledger.snapshot.inventory)
@@ -912,7 +930,7 @@ def test_native_below_protection_minimum_waits_for_legal_emergency(lifecycle_rep
     assert proposal.quantity.amount == D("2.9")
     assert (
         execution_module("execution.fake_lifecycle")
-        .FakeLifecycleExchange()
+        .FakeLifecycleExchange(writer=writer(repo))
         .execute(lifecycle, proposal.command_id, clock)
     )
     assert all(lot.instrument != BTC for lot in repo.ledger.snapshot.inventory)
@@ -923,7 +941,7 @@ def test_fake_venue_store_records_create_and_cancel_ack_without_terminal_absence
     entry = fill(qty="4")
     lifecycle.apply_entry_event(prepare(repo).intent_id, entry, clock)
     create = lifecycle.commands(BTC)[0]
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     fake.observe_trade(entry)
     before = fake.snapshot("a", "BTC", clock.utc_now())
     assert fake.execute(lifecycle, create.command_id, clock)
@@ -960,7 +978,7 @@ def test_serial_replacement_delayed_dispatch_cannot_reissue_after_deadline(lifec
     state = lifecycle.assess(BTC, clock)
     proposal_id = state.context.stop_id
     clock.clock.advance(D("6"))
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     with pytest.raises(ValueError, match="deadline"):
         fake.execute(lifecycle, proposal_id, clock)
     state = lifecycle.assess(BTC, clock)
@@ -976,7 +994,7 @@ def test_partial_serial_exit_returned_cancel_matches_durable_command(lifecycle_r
     partial = replace(request(), quantity=Quantity(D("2"), "BTC"))
     cancel = lifecycle.request_exit(partial, clock)[0]
     assert cancel in lifecycle.commands(BTC)
-    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange()
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
     assert fake.execute(lifecycle, cancel.command_id, clock)
     lifecycle.observe_stop(stop_observation(lifecycle.get(BTC), "CANCELED", "0", True), clock)
     sell = lifecycle.request_exit(partial, clock)[0]

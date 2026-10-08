@@ -2,14 +2,21 @@
 
 from datetime import UTC, datetime
 
+from trading_bot.execution.ownership import require_writer
+
 
 class FakeExchange:
-    def __init__(self, observations=(), *, error=None):
+    def __init__(self, observations=(), *, error=None, writer=None):
         self.observations = observations
         self.error = error
+        self.writer = writer
         self.submissions = []
 
     def submit(self, intent):
+        require_writer(self.writer)
+        return self.writer.send(intent.account_id, lambda: self._submit(intent))
+
+    def _submit(self, intent):
         self.submissions.append(intent)
         if self.error is not None:
             raise self.error
@@ -25,6 +32,8 @@ class FakeDispatcher:
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def dispatch(self, intent_id):
+        require_writer(self.exchange.writer)
+        self.exchange.writer.check(self.repository.account_id)
         self.checkpoint("PREPARED")
         if not self.repository.claim(intent_id, now=self.clock()):
             return False

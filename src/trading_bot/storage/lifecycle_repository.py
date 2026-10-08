@@ -1,6 +1,6 @@
 """Offline durable protection/exit coordinator, serialized by the P02 account lock.
 
-This is a local transaction boundary, not P03.5 writer ownership or a live adapter.
+Every fake effect requires P03.5 ownership and independent fencing; no live adapter.
 Every fake sell right is a P02 SELL reservation; linked exit shares its stop right.
 """
 
@@ -14,6 +14,7 @@ from trading_bot.domain.records import ExitRequest, Fill, OrderObservation, Rese
 from trading_bot.domain.serialization import Record
 from trading_bot.execution.absence import SyntheticAbsenceEvidence
 from trading_bot.execution.exits import ExitState, SyntheticExitVerification, request_exit
+from trading_bot.execution.ownership import require_writer
 from trading_bot.execution.protection import (
     LifecycleCommand,
     ProtectionContext,
@@ -820,7 +821,13 @@ class LifecycleRepository:
             )
         return self._assess(conn, book, state, clock, create=False)
 
-    def execute_fake(self, command_id, clock, *, absence=None):
+    def execute_fake(self, command_id, clock, *, absence=None, writer=None):
+        require_writer(writer)
+        return writer.send(
+            self.account, lambda: self._execute_fake(command_id, clock, absence=absence)
+        )
+
+    def _execute_fake(self, command_id, clock, *, absence=None):
         """Synthetic atomic linked operation; unknown commands are never retried.
 
         Claim commits UNKNOWN before any simulated external effect. A storage failure

@@ -55,6 +55,7 @@ def execution_repo():
         module = execution_module("storage.execution_repository")
         with connection() as conn:
             conn.execute(Path("migrations/002_execution.sql").read_text())
+            conn.execute(Path("migrations/002c_writer_ownership.sql").read_text())
         repo = module.ExecutionRepository(connection, "a", "Q")
         funding(repo.ledger, "fund", Money(D("100"), "Q"))
         yield repo, connection
@@ -82,3 +83,14 @@ def prepare(repo):
     return repo.prepare_intent(
         approval, item, '{"client_order_id":"o1","type":"LIMIT","time_in_force":"FOK"}', now=NOW
     )
+
+
+def writer(repo):
+    """Explicit operator grant for legacy fake fixtures; never production auto-acquire."""
+    if not hasattr(repo, "_fixture_writer"):
+        m = execution_module("execution.ownership")
+        control = m.OwnershipControl(repo.connect, repo.account_id, m.FakeFenceAuthority())
+        repo._fixture_writer = control.manual_initial(
+            "fixture", "fixture-process", "manual fixture grant"
+        )
+    return repo._fixture_writer

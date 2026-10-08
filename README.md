@@ -85,4 +85,4 @@ Generowane testy sprawdzają pełny replay po kolejnych zdarzeniach i na lokalny
 
 ## Częściowy lifecycle P03 offline
 
-P03.1–P03.4 obejmuje durable intents, obserwacje zleceń, ochronę i dwie jawne polityki wyjścia wyłącznie na fake exchange/PostgreSQL. G3 niezaliczone; P03.5–P03.6 i P04 nie rozpoczęto. Default profiles pozostają wyłączone dla execution; V01–V11 UNKNOWN, live BLOCKED. Granice i wyniki: [P03.1–P03.2](docs/runbooks/p03-1-2-execution-lifecycle.md), [P03.3–P03.4](docs/runbooks/p03-3-4-protection-exits.md), [corrective review P03.3–P03.4](docs/runbooks/p03-3-4-corrective-review.md).
+P03.1–P03.5 obejmuje durable intents, obserwacje zleceń, ochronę, dwie jawne polityki wyjścia oraz single writer/fencing wyłącznie na fake exchange/PostgreSQL. G3 niezaliczone; P03.6 i P04 nie rozpoczęto. Default profiles pozostają wyłączone dla execution; V01–V11 UNKNOWN, live BLOCKED. Granice i wyniki: [P03.1–P03.2](docs/runbooks/p03-1-2-execution-lifecycle.md), [P03.3–P03.4](docs/runbooks/p03-3-4-protection-exits.md), [corrective review P03.3–P03.4](docs/runbooks/p03-3-4-corrective-review.md), [P03.5 ownership/fencing](docs/runbooks/p03-5-writer-ownership.md).
