@@ -539,7 +539,14 @@ class LifecycleRepository:
         return [LifecycleCommand.from_json(json.dumps(row[0])) for row in rows]
 
     def _absence_valid(self, conn, book, state, evidence, clock, *, executing=False):
-        if evidence is None or state.context.stop_status != "NONE" or state.context.stop_id:
+        absent_locally = state.context.stop_status == "NONE" and not state.context.stop_id
+        terminal_locally = state.context.stop_status in {
+            "CANCELED",
+            "FILLED",
+            "REJECTED",
+            "EXPIRED",
+        } and self._terminal(book, state)
+        if evidence is None or not (absent_locally or terminal_locally):
             return False
         snapshot = evidence.snapshot
         if (
@@ -641,7 +648,12 @@ class LifecycleRepository:
                 conn, book, "release", "lifecycle:" + state.context.stop_id, observation
             )
             state = replace(state, reconciled_version=book.version)
-        if state.context.stop_status == "NONE":
+        terminal_absence_path = (
+            state.policy == "NATIVE_LINKED_VERIFIED"
+            and terminal_ok
+            and state.context.stop_status in {"CANCELED", "FILLED", "REJECTED", "EXPIRED"}
+        )
+        if state.context.stop_status == "NONE" or terminal_absence_path:
             if state.sell_status != "NONE" or not self._absence_valid(
                 conn, book, state, absence, clock
             ):
@@ -652,6 +664,7 @@ class LifecycleRepository:
                 request.instrument,
                 min(effective_request.quantity.amount, state.context.protection.target.amount),
                 policy=state.policy,
+                stop_id=state.context.stop_id,
             )
             proposals = [proposal]
             state = replace(state, absence=absence)
@@ -895,7 +908,11 @@ class LifecycleRepository:
                         raise ValueError("linked fake requires matching active stop right")
                     order_id = proposal.stop_id
                 else:
-                    if state.context.stop_status == "NONE":
+                    if state.context.stop_status == "NONE" or (
+                        proposal.policy == "NATIVE_LINKED_VERIFIED"
+                        and state.context.stop_status
+                        in {"CANCELED", "FILLED", "REJECTED", "EXPIRED"}
+                    ):
                         if not self._absence_valid(
                             conn, book, state, absence, clock, executing=True
                         ):

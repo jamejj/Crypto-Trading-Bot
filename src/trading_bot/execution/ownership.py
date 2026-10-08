@@ -107,6 +107,18 @@ class FakeFenceAuthority:
         if value is None or value[0] != token or value[1] is not permit:
             raise OwnershipLost("transmission channel fenced")
 
+    def _fail_stop(self, token, permit):
+        # Revoke the shared channel, including copied authentic handles. A stale
+        # or unauthenticated handle cannot revoke another generation's channel.
+        # This is no operator cutoff receipt and grants no takeover permission.
+        with self._lock:
+            active = self._active.get(token.account_id)
+            if active is not None and active[0] == token and active[1] is permit:
+                del self._active[token.account_id]
+                self._fenced_epochs[token.account_id] = max(
+                    token.epoch, self._fenced_epochs.get(token.account_id, 0)
+                )
+
     def _send(self, token, permit, callback):
         with self._lock:
             self._check(token, permit)
@@ -232,6 +244,7 @@ class WriterGuard:
                     self.control.authority._check(self.token, self._permit)
         except (OwnershipLost, psycopg.Error):
             self.stopped = True
+            self.control.authority._fail_stop(self.token, self._permit)
             raise
 
     def send(self, account, callback):
@@ -241,6 +254,7 @@ class WriterGuard:
                 return self.control.authority._send(self.token, self._permit, callback)
         except (OwnershipLost, psycopg.Error):
             self.stopped = True
+            self.control.authority._fail_stop(self.token, self._permit)
             raise
 
 

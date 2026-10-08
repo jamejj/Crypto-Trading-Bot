@@ -7,6 +7,7 @@ from datetime import timedelta
 from trading_bot.domain.records import OrderIntent, RiskApproval
 from trading_bot.domain.serialization import utc
 from trading_bot.execution.intents import prepare_intent
+from trading_bot.execution.protection import terminal_partial
 from trading_bot.execution.reducer import TERMINAL, OrderState, apply
 from trading_bot.execution.submission import SubmitWindow, UnresolvedSubmit
 
@@ -75,6 +76,10 @@ class ExecutionRepository:
         return pending
 
     def _unresolved(self, conn, exclude=None, now=None):
+        if conn.execute(
+            "SELECT 1 FROM execution_incidents WHERE account_id=%s LIMIT 1", (self.account_id,)
+        ).fetchone():
+            raise ValueError("unresolved terminal partial FOK incident blocks account entries")
         for intent_id, status, missing, window in self._pending_submits(conn):
             if intent_id != exclude and (
                 missing
@@ -226,6 +231,40 @@ class ExecutionRepository:
                 raise ValueError("unknown intent")
             return OrderState.from_json(json.dumps(row[0]))
 
+    def _entry_right(self, book, intent):
+        original = next(
+            (
+                args[0]
+                for method, args in book.operations
+                if method == "_reserve" and args[0].reservation_id == intent.reservation_id
+            ),
+            None,
+        )
+        current = book.reservations.get(intent.reservation_id)
+        if (
+            original is None
+            or current != original
+            or current.status != "PENDING"
+            or current.account_id != intent.account_id
+            or current.intent_id != intent.intent_id
+            or current.instrument != intent.instrument
+            or current.side != "BUY"
+            or current.quantity != intent.quantity
+            or not current.order_id
+            or current.cash.amount <= 0
+        ):
+            raise PermissionError("active exact entry reservation required")
+        # Include the whole account's pending cash/base/fee rights and liabilities.
+        # The approval never manufactures replacement rights after release/fill.
+        currencies = {
+            current.cash.currency,
+            current.quantity.base,
+            *(m.currency for m in current.fee_buffers),
+        }
+        if any(book._available(currency) < 0 for currency in currencies):
+            raise PermissionError("entry commitments exceed currently owned assets")
+        return current
+
     def claim(self, intent_id, *, now):
         with transaction(self.connect) as conn:
             self._book(conn)
@@ -252,6 +291,7 @@ class ExecutionRepository:
                     (self.account_id, intent_id),
                 )
                 return False
+            self._entry_right(book, intent)
             if self._unresolved(conn, intent_id, now):
                 return False
             self._record_window(conn, intent_id, now)
@@ -262,10 +302,25 @@ class ExecutionRepository:
             ).fetchone()
             return row is not None
 
-    def _transmit(self, intent, now, callback):
+    def _send_time(self, conn, intent, approval, clock, right):
+        row = conn.execute(
+            "SELECT evidence FROM execution_submit_windows WHERE account_id=%s AND intent_id=%s",
+            (self.account_id, intent.intent_id),
+        ).fetchone()
+        # Read only AFTER potential DB/ownership/fence waits, never reuse call-time UTC.
+        now = utc(clock())
+        if row is None or now >= min(
+            SubmitWindow.from_json(json.dumps(row[0])).deadline,
+            approval.expires_at,
+            right.expires_at,
+        ):
+            raise PermissionError("durable window/approval/reservation deadline expired or absent")
+        return now
+
+    def _transmit(self, intent, clock, callback):
         """One-shot fake admission, durable UNKNOWN before the external effect."""
         with transaction(self.connect) as conn:
-            self._book(conn)
+            book = self._book(conn)
             row = conn.execute(
                 "SELECT intent,approval,state FROM execution_intents "
                 "JOIN execution_outbox USING(account_id,intent_id) "
@@ -274,15 +329,9 @@ class ExecutionRepository:
             ).fetchone()
             if row is None or row[2] != "DISPATCHING":
                 raise PermissionError("durable one-shot claim required")
-            window = conn.execute(
-                "SELECT evidence FROM execution_submit_windows "
-                "WHERE account_id=%s AND intent_id=%s",
-                (self.account_id, intent.intent_id),
-            ).fetchone()
-            if window is None or utc(now) >= SubmitWindow.from_json(json.dumps(window[0])).deadline:
-                raise PermissionError("durable attempt window/deadline required and unexpired")
             durable = OrderIntent.from_json(json.dumps(row[0]))
             approval = RiskApproval.from_json(json.dumps(row[1]))
+            self._entry_right(book, durable)
             if replace(intent, status=durable.status) != durable or intent.side != "BUY":
                 raise ValueError("transmission differs from immutable entry intent")
             if conn.execute("SELECT to_regclass('instrument_lifecycle')").fetchone()[0] is None:
@@ -297,8 +346,7 @@ class ExecutionRepository:
             from trading_bot.storage.lifecycle_repository import LifecycleRepository
 
             LifecycleRepository(self)._load(conn, intent.instrument)
-            if approval.expires_at <= utc(now):
-                raise ValueError("entry transmission expired")
+            self._send_time(conn, durable, approval, clock, self._entry_right(book, durable))
             conn.execute(
                 "UPDATE execution_outbox SET state='SUBMISSION_UNKNOWN' "
                 "WHERE account_id=%s AND intent_id=%s",
@@ -306,15 +354,18 @@ class ExecutionRepository:
             )
         # Recheck under the account lock: intervening fill/order evidence wins.
         with transaction(self.connect) as conn:
-            self._book(conn)
+            book = self._book(conn)
+            self._entry_right(book, intent)
             row = conn.execute(
                 "SELECT state FROM execution_outbox WHERE account_id=%s AND intent_id=%s",
                 (self.account_id, intent.intent_id),
             ).fetchone()
             if row != ("SUBMISSION_UNKNOWN",):
                 raise PermissionError("order evidence superseded transmission")
+            now = self._send_time(conn, intent, approval, clock, self._entry_right(book, intent))
             if self._unresolved(conn, intent.intent_id, now):
                 raise PermissionError("unresolved/uncovered exposure blocks transmission")
+            self._send_time(conn, intent, approval, clock, self._entry_right(book, intent))
             return callback(intent)
 
     def recover_ambiguous(self):
@@ -370,6 +421,20 @@ class ExecutionRepository:
             raise ValueError("unknown intent")
         state = apply(OrderState.from_json(json.dumps(row[0])), event, book)
         self._record_window(conn, intent_id, received_at)
+        # Retain positive terminal partial evidence even if late trades later
+        # complete the target. Coverage/economic reconciliation is not clearance
+        # of a breached FOK semantic contract.
+        partial_evidence = any(
+            obs.terminal and 0 < obs.cumulative_quantity.amount < state.target.amount
+            for obs in state.observations
+        )
+        if terminal_partial(state) or partial_evidence:
+            conn.execute(
+                "INSERT INTO execution_incidents "
+                "VALUES (%s,%s,'TERMINAL_PARTIAL_FOK',%s,%s::jsonb) "
+                "ON CONFLICT DO NOTHING",
+                (self.account_id, intent_id, utc(received_at), state.to_json()),
+            )
         self._persist(conn, book, version, count)
         conn.execute(
             "INSERT INTO execution_observations(account_id,intent_id,event) "

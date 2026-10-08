@@ -1151,7 +1151,7 @@ def test_claimed_entry_cannot_send_after_other_inventory_becomes_uncovered(lifec
     repo.ledger.post_fill(replace(fill("external", qty="1"), order_id="external-order"))
     exchange = FakeExchange(writer=writer(repo))
     with pytest.raises(PermissionError, match="unresolved|uncovered"):
-        exchange.submit(repo.get_intent(intent.intent_id), repository=repo, now=NOW)
+        exchange.submit(repo.get_intent(intent.intent_id), repository=repo, clock=lambda: NOW)
     assert exchange.submissions == []
     assert repo.ledger.snapshot.reservations[0].cash.amount == 40
 

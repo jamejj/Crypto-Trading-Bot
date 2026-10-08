@@ -76,6 +76,8 @@ def request_exit(request: ExitRequest, state: ExitState):
     elif state.policy == "SERIAL_CANCEL_THEN_MARKET_VERIFIED" and status in {
         "CANCELED",
         "FILLED",
+        "REJECTED",
+        "EXPIRED",
         "NONE",
     }:
         if (

@@ -8,12 +8,68 @@ checkpointy `83ad40d`, `ed1a463`, `9f6ade9`, `167af5f` oraz naprawy P03.6.
 Nie wykonano merge ani P04. Nie używano credentials, prywatnych endpointów,
 UAT trading ani realnych transakcji. Testy nie kontaktują się z Crypto.com.
 
-**G3 PASS — wyłącznie fake/offline/PostgreSQL. Live BLOCKED.**
+**G3 FAIL/BLOCKED — historyczny G3 PASS na `d33f716` został obalony. Live BLOCKED.**
 
-Po naprawach nie stwierdzono otwartego P0/P1 w tym ograniczonym zakresie.
-Wynik nie dopuszcza live ani rozpoczęcia P04 bez kolejnej zgody użytkownika.
+Niezależny adversarial review odtworzył cztery P1 oraz P2 authentic copied
+WriterGuard. Poniżej zachowano historyczne wyniki P03.6 jako zapis checkpointu,
+a corrective pass opisano osobno. Naprawy nie stanowią nowego G3 PASS: wymagany
+jest kolejny niezależny review. Nie wykonano merge ani P04.
 
-## Review i naprawy
+## Corrective pass po niezależnym adversarial review d33f716
+
+Zakres: P1.1–P1.4 oraz potwierdzony P2; bez P04, merge, nowych capability
+Crypto.com lub zmiany specyfikacji. Wszystkie cztery P1 i authentic-copy P2
+otrzymały behawioralne failing regressions przed poprawką (pierwszy przebieg:
+9 FAIL; następnie osobne RED dla admission/release i oczekiwania na realny lock).
+Dodatkowy RED wykazał, że terminal partial evidence musi przetrwać także
+późniejsze uzupełnienie filli do pełnego targetu. Nie usunięto ani nie osłabiono
+istniejących regresji. Zmiana starego API `now` na dostawcę `clock` jest jawna;
+nie ma kompatybilnego fallbacku ze statycznym czasem.
+
+| Finding | Naprawa i testy |
+| --- | --- |
+| P1.1 BUY po release | Claim oraz obie fazy pre-send sprawdzają aktywną, niezmienioną reservation zgodną z oryginalnym `_reserve` w P02 journal: account/intent/instrument/BUY/quantity/cash/fee commitments. Bieżące dostępne aktywa uwzględniają wszystkie pending rights i fee liabilities. Release przed claim i po claim daje zero submitów; nic nie rezerwuje środków ponownie. |
+| P1.2 czas przed lockiem | Publiczny fake submit wymaga callable clock; aktualny czas jest pobierany po ownership/fence/account waits i ponownie przed callbackiem. Kontrola obejmuje durable submit window, approval i reservation expiry. Oddzielna sesja PostgreSQL blokuje ownership row; test potwierdza rzeczywiste oczekiwanie w `pg_stat_activity`, przesuwa SimulationClock o 6/61 s i zwalnia lock: zero submitów. |
+| P1.3 terminal REJECTED/EXPIRED stop | Serial dopuszcza emergency SELL dopiero po terminalnym dowodzie zgodnym z actual trades i release starego SELL right. Native terminal CANCELED/REJECTED/EXPIRED używa wyłącznie jawnej, osobno zweryfikowanej absence/emergency capability w tym samym native profilu: kompletny pozytywny snapshot i ponowny dowód przed efektem. Brak dowodu nie tworzy SELL. Status nie jest zamieniany na NONE; nie ma native→serial fallbacku. |
+| P1.4 terminal partial FOK | `002e_execution_incidents.sql` zapisuje append-only account-level incident w tej samej transakcji co order/ledger evidence. Prepare/claim/pre-send blokują nowe wejścia mimo coverage, późnych pełnych filli, zamknięcia pozycji i restartu repozytorium. Realne fille i ochrona pozostają. Exit jest nadal dostępny. Migracja zachowuje historyczne partial terminal evidence, bez wymyślonego receipt time; UPDATE/DELETE/TRUNCATE incidentów są zabronione. |
+| P2 authentic copied WriterGuard | Błąd ownership/DB odcina współdzielony permit w FakeFenceAuthority i trwale fence'uje jego epoch. `copy.copy` nie odtwarza prawa po przywróceniu DB; pokryto błędy zarówno `check`, jak i `send`. Nieautentyczny guard bez permitu nie odcina autentycznego właściciela. Fail-stop nie wystawia operator cutoff receipt ani prawa do automatycznego takeover. |
+
+Self-review sprawdził oba punkty admission, trwałość UNKNOWN, P02 journal jako
+źródło commitments, transaction rollback boundary, status terminalny vs actual
+trades, brak fallbacku, scope incidentu i permit identity/epoch. Wykryty w
+końcowej regresji mismatch komunikatu błędu został poprawiony w kodzie:
+nowy incident nadal raportuje `unresolved`; istniejącego testu nie zmieniono.
+
+`002e` należy zastosować po `002d`, przed uruchomieniem nowego repository.
+Migration upgrade test odtwarza starszy schemat i seeduje historyczny partial,
+także gdy późniejsze fille uzupełniły target. Brak migracji nie jest tolerowany
+przez cichy fallback. Nie dodano automatycznego clearance: jawna późniejsza
+reconciliation/recovery policy musi zostać osobno zaprojektowana i zweryfikowana;
+coverage, terminal status ani administrator SQL nie stanowią produktu clearance.
+
+Aktualny status E01–E05: poprawki i regresje opisane powyżej są kandydatem do
+ponownego niezależnego zaliczenia. E01 obejmuje nowe reservation/time/incident
+checks, E02 zachowane realne skutki P02, E03/E04 nowe terminal emergency paths,
+E05 shared permit fail-stop. **Żaden z tych statusów nie przywraca G3 PASS.**
+
+Dowody corrective (finalny kod):
+
+- Dedykowane regresje: **16 PASS**; real PostgreSQL.
+- Wymagany target P03.6: **60 PASS**.
+- Pełny suite P01–P03: **299 PASS**, 172,29 s, bez skipów: 150 unit,
+  2 property, 122 real PostgreSQL integration, 25 fault tests.
+- Ruff check: **PASS**; format: **54 files already formatted**;
+  `git diff --check`: **PASS**.
+
+Świadomie odroczone: clearance/recovery actor dla incidentu, runtime 24/7,
+zewnętrzny production fencing i capability/UAT Crypto.com. Nie odnaleziono
+sprzeczności specyfikacji wymagającej zmiany decyzji użytkownika w tym corrective
+pass. Wynik testów fake/offline nie dowodzi semantyki realnej giełdy.
+
+**G3 FAIL/BLOCKED: wymagany kolejny niezależny review corrective commita.
+Live BLOCKED, V01–V11 UNKNOWN. Zatrzymanie bez merge i P04.**
+
+## Historyczny review i naprawy P03.6
 
 Niezależny reviewer przeczytał skumulowany diff P03 względem P02, design §1
 oraz E01–E05, sprawdził publiczne ścieżki i P02 ledger/reservations. Przed
@@ -48,10 +104,12 @@ protection reservation; partial exit oczekuje ponownej ochrony zamiast
 permanentnego `BLOCKED_RESIDUAL_AFTER_EXIT`. Oryginalna poprawiona parametryzacja
 CANCELED/ACTIVE nadal sprawdza oba przypadki replay create.
 
-## E01–E05
+## Historyczna kwalifikacja E01–E05 na d33f716 (cofnięta)
 
-Poniższa kwalifikacja dotyczy fake exchange, syntetycznych capability artifacts
-oraz rzeczywistego lokalnego PostgreSQL. Nie stanowi dowodu semantyki giełdy.
+Poniższa tabela dokumentuje historyczne twierdzenia, które nie są aktualnym
+zaliczeniem invariantów. P1.1/P1.2/P1.4 podważyły admission/E01, P1.3
+podważył E03/E04, a P2 podważył E05. Kwalifikacja dotyczyła fake exchange,
+syntetycznych capability artifacts oraz rzeczywistego lokalnego PostgreSQL. Nie stanowi dowodu semantyki giełdy.
 
 | Invariant | Status po review | Zakres dowodu |
 | --- | --- | --- |
@@ -73,7 +131,7 @@ Nie zmieniono implementacji P02. Jego accounting, dedup, late fees, inventory,
 reservations, cash/base commitments, NAV/HWM, deposits, replay, rollback i
 concurrent writers pozostają objęte pełną regresją, w tym testami property.
 
-## Dowody końcowe
+## Historyczne dowody checkpointu d33f716
 
 Środowisko: Python 3.12, pytest 9.0.2, Hypothesis 6.151.9, psycopg 3.3.3,
 Ruff 0.15.7, PostgreSQL 18.6 (Postgres.app). Lokalny izolowany cluster przez
@@ -129,4 +187,4 @@ git diff --check
 
 Runbook odcięcia i manual takeover: [P03.5](p03-5-writer-ownership.md).
 Wcześniejsze raporty opisują historyczne partial checkpoints; ten raport
-rozstrzyga finalny zakres P03. **Po osobnym commicie zatrzymanie; bez merge i P04.**
+rejestruje także cofnięcie checkpointu d33f716 i wymagane ponowne review. **Po osobnym commicie zatrzymanie; bez merge i P04.**

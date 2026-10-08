@@ -15,16 +15,16 @@ class FakeExchange:
         self.writer = writer
         self.submissions = []
 
-    def submit(self, intent, *, repository=None, now=None):
+    def submit(self, intent, *, repository=None, clock=None):
         require_writer(self.writer)
         if (
             type(repository) is not ExecutionRepository
-            or now is None
+            or not callable(clock)
             or repository.account_id != intent.account_id
         ):
             raise PermissionError("durable send admission required")
         return self.writer.send(
-            intent.account_id, lambda: repository._transmit(intent, now, self._submit)
+            intent.account_id, lambda: repository._transmit(intent, clock, self._submit)
         )
 
     def _submit(self, intent):
@@ -52,7 +52,7 @@ class FakeDispatcher:
         intent = self.repository.get_intent(intent_id)
         try:
             observations = self.exchange.submit(
-                intent, repository=self.repository, now=self.clock()
+                intent, repository=self.repository, clock=self.clock
             )
             self.checkpoint("SEND")
             if not observations:

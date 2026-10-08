@@ -57,6 +57,7 @@ def execution_repo():
             conn.execute(Path("migrations/002_execution.sql").read_text())
             conn.execute(Path("migrations/002c_writer_ownership.sql").read_text())
             conn.execute(Path("migrations/002d_submit_windows.sql").read_text())
+            conn.execute(Path("migrations/002e_execution_incidents.sql").read_text())
         repo = module.ExecutionRepository(connection, "a", "Q")
         funding(repo.ledger, "fund", Money(D("100"), "Q"))
         yield repo, connection
