@@ -8,6 +8,8 @@ from trading_bot.domain.serialization import utc
 
 
 def prepare_intent(approval, reservation, payload, *, now):
+    if approval.side != "BUY" or reservation.side != "BUY":
+        raise ValueError("entry API is BUY only; SELL requires exit coordination")
     now = utc(now)
     if (
         approval.consumed

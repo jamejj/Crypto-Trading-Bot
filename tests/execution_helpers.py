@@ -56,6 +56,7 @@ def execution_repo():
         with connection() as conn:
             conn.execute(Path("migrations/002_execution.sql").read_text())
             conn.execute(Path("migrations/002c_writer_ownership.sql").read_text())
+            conn.execute(Path("migrations/002d_submit_windows.sql").read_text())
         repo = module.ExecutionRepository(connection, "a", "Q")
         funding(repo.ledger, "fund", Money(D("100"), "Q"))
         yield repo, connection
@@ -85,8 +86,24 @@ def prepare(repo):
     )
 
 
+def configure_transport(repo):
+    """A sending test has an explicit protection contract, even without fills."""
+    with repo.connect() as conn:
+        if conn.execute("SELECT to_regclass('instrument_lifecycle')").fetchone()[0] is None:
+            conn.execute(Path("migrations/002b_protection_exits.sql").read_text())
+        configured = conn.execute(
+            "SELECT 1 FROM instrument_lifecycle WHERE account_id=%s AND instrument=%s",
+            (repo.account_id, BTC.to_json()),
+        ).fetchone()
+    if configured is None:
+        p = execution_module("execution.protection")
+        lifecycle = execution_module("storage.lifecycle_repository").LifecycleRepository(repo)
+        lifecycle.configure(p.ProtectionContext(BTC, Money(D("9"), "Q"), D("1")))
+
+
 def writer(repo):
     """Explicit operator grant for legacy fake fixtures; never production auto-acquire."""
+    configure_transport(repo)
     if not hasattr(repo, "_fixture_writer"):
         m = execution_module("execution.ownership")
         control = m.OwnershipControl(repo.connect, repo.account_id, m.FakeFenceAuthority())

@@ -317,11 +317,13 @@ def test_competing_base_reservation_in_other_market_blocks_duplicate_sell_right(
         quantity=Quantity(D("2"), "BTC"),
         cash=Money(D("0"), "Q"),
     )
-    repo.ledger.reserve(item, item.ledger_version)
+    # Public fill ingestion now reserves protection immediately, before a competing SELL.
+    with pytest.raises(ValueError, match="insufficient"):
+        repo.ledger.reserve(item, item.ledger_version)
     state = lifecycle.assess(BTC, clock)
-    assert state.context.protection.status == "CONFLICT"
+    assert state.context.stop_status == "PENDING"
     assert state.context.protection.uncovered.amount == 2
-    assert lifecycle.commands(BTC) == []
+    assert len(lifecycle.commands(BTC)) == 1
 
 
 def test_delayed_fake_cancel_ack_cannot_regress_terminal_or_block_prepared_sell(lifecycle_repo):
@@ -1002,4 +1004,191 @@ def test_partial_serial_exit_returned_cancel_matches_durable_command(lifecycle_r
     assert fake.execute(lifecycle, sell.command_id, clock)
     state = lifecycle.assess(BTC, clock)
     assert state.context.protection.target.amount == 2
-    assert state.incident == "BLOCKED_RESIDUAL_AFTER_EXIT"
+    assert state.context.stop_status == "PENDING"
+    assert state.exit_request is None
+
+
+@pytest.mark.parametrize("gateway", ["dispatcher", "public_event"])
+def test_entry_fill_public_path_atomically_updates_configured_protection(lifecycle_repo, gateway):
+    lifecycle, repo, _, clock = lifecycle_repo
+    intent = prepare(repo)
+    if gateway == "dispatcher":
+        module = execution_module("execution.dispatcher")
+        exchange = module.FakeExchange((fill(),), writer=writer(repo))
+        assert module.FakeDispatcher(repo, exchange, clock=lambda: NOW).dispatch(intent.intent_id)
+    else:
+        repo.apply_event(intent.intent_id, fill())
+    state = lifecycle.get(BTC)
+    assert state.context.protection is not None
+    assert state.context.protection.target.amount == 2
+    assert state.context.stop_status == "PENDING"
+    assert len(lifecycle.commands(BTC)) == 1
+    if gateway == "dispatcher":
+        assert state.context.protection.lot_deadlines[0].deadline == NOW + timedelta(seconds=5)
+
+
+def test_active_after_local_cancel_does_not_restore_coverage_or_duplicate_cancel(lifecycle_repo):
+    lifecycle, repo, clock = confirmed(lifecycle_repo)
+    verify(lifecycle, "SERIAL_CANCEL_THEN_MARKET_VERIFIED")
+    cancel = lifecycle.request_exit(request(), clock)[0]
+    state = lifecycle.get(BTC)
+    active = replace(
+        stop_observation(state), source_id="fresh-active", observed_at=NOW + timedelta(seconds=1)
+    )
+    lifecycle.observe_stop(
+        active,
+        clock,
+        side="SELL",
+        trigger=state.context.trigger,
+        quantity=state.context.stop_quantity,
+    )
+    state = lifecycle.get(BTC)
+    assert state.context.stop_status == "CANCEL_PENDING"
+    assert state.context.protection.covered.amount == 0
+    assert lifecycle.request_exit(request(), clock) == []
+    assert sum(c.command_id == cancel.command_id for c in lifecycle.commands(BTC)) == 1
+
+
+@pytest.mark.parametrize("enrich", [False, True])
+def test_retired_stop_trade_redelivery_and_fee_enrichment_do_not_mutate_current_stop(
+    lifecycle_repo, enrich
+):
+    from accounting_helpers import fee
+
+    lifecycle, repo, _, clock = lifecycle_repo
+    intent = prepare(repo)
+    lifecycle.apply_entry_event(intent.intent_id, fill(), clock)
+    state = lifecycle.get(BTC)
+    lifecycle.observe_stop(
+        stop_observation(state),
+        clock,
+        side="SELL",
+        trigger=state.context.trigger,
+        quantity=state.context.stop_quantity,
+    )
+    verify(lifecycle, "SERIAL_CANCEL_THEN_MARKET_VERIFIED")
+    lifecycle.apply_entry_event(intent.intent_id, fill("growth"), clock)
+    old_id = lifecycle.get(BTC).context.stop_id
+    trade = replace(fill("race", side="SELL", qty="1"), order_id=old_id)
+    lifecycle.apply_stop_fill(trade, clock)
+    lifecycle.observe_stop(stop_observation(lifecycle.get(BTC), "CANCELED", "1", True), clock)
+    replacement = lifecycle.assess(BTC, clock)
+    assert replacement.context.stop_id != old_id
+    correction = replace(
+        trade,
+        source_id="rest:redelivery",
+        fees=(fee(currency="Q", trade_id="race"),) if enrich else (),
+    )
+    lifecycle.apply_stop_fill(correction, clock)
+    state = lifecycle.get(BTC)
+    assert state.context.stop_id == replacement.context.stop_id
+    assert state.context.stop_quantity.amount == 3
+    assert state.context.protection.target.amount == 3
+    assert state.context.protection.lot_deadlines == replacement.context.protection.lot_deadlines
+    assert repo.ledger.replay().snapshot == repo.ledger.snapshot
+    if enrich:
+        assert repo.ledger.replay().fees[("a", BTC, "race", "Q")].value.amount == D("0.1")
+
+
+def test_partial_exit_remaining_is_reprotected_instead_of_stuck_residual(lifecycle_repo):
+    lifecycle, repo, clock = confirmed(lifecycle_repo)
+    verify(lifecycle, "SERIAL_CANCEL_THEN_MARKET_VERIFIED")
+    partial = replace(request(), quantity=Quantity(D("2"), "BTC"))
+    cancel = lifecycle.request_exit(partial, clock)[0]
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
+    fake.execute(lifecycle, cancel.command_id, clock)
+    lifecycle.observe_stop(stop_observation(lifecycle.get(BTC), "CANCELED", "0", True), clock)
+    sell = lifecycle.request_exit(partial, clock)[0]
+    fake.execute(lifecycle, sell.command_id, clock)
+    state = lifecycle.assess(BTC, clock)
+    assert state.context.protection.target.amount == 2
+    assert state.context.stop_status == "PENDING"
+    assert state.exit_request is None
+    assert fake.execute(lifecycle, state.context.stop_id, clock)
+    assert lifecycle.get(BTC).context.protection.covered.amount == 2
+
+
+def test_public_entry_admission_blocks_while_inventory_is_uncovered(lifecycle_repo):
+    from accounting_helpers import reservation
+
+    from trading_bot.domain.records import RiskApproval
+
+    lifecycle, repo, _, clock = lifecycle_repo
+    intent = prepare(repo)
+    lifecycle.apply_entry_event(intent.intent_id, fill(), clock)
+    item = replace(reservation(repo.ledger), reservation_id="r2", intent_id="i2", order_id="o2")
+    approval = RiskApproval(
+        "approval2",
+        BTC,
+        "BUY",
+        Quantity(D("4"), "BTC"),
+        Money(D("40"), "Q"),
+        item.risk,
+        Money(D("10"), "Q"),
+        Money(D("9"), "Q"),
+        item.ledger_version,
+        "synthetic-offline",
+        item.expires_at,
+        False,
+    )
+    with pytest.raises(ValueError, match="unresolved|uncovered"):
+        repo.prepare_intent(
+            approval,
+            item,
+            '{"client_order_id":"o2","type":"LIMIT","time_in_force":"FOK"}',
+            now=clock.utc_now(),
+        )
+
+
+def test_claimed_entry_cannot_send_after_other_inventory_becomes_uncovered(lifecycle_repo):
+    from trading_bot.execution.dispatcher import FakeExchange
+
+    lifecycle, repo, _, clock = lifecycle_repo
+    intent = prepare(repo)
+    repo.claim(intent.intent_id, now=NOW)
+    # A fill from a different known accounting source changes current inventory
+    # between claim and transmission. The send gate must recheck coverage.
+    repo.ledger.post_fill(replace(fill("external", qty="1"), order_id="external-order"))
+    exchange = FakeExchange(writer=writer(repo))
+    with pytest.raises(PermissionError, match="unresolved|uncovered"):
+        exchange.submit(repo.get_intent(intent.intent_id), repository=repo, now=NOW)
+    assert exchange.submissions == []
+    assert repo.ledger.snapshot.reservations[0].cash.amount == 40
+
+
+def test_completed_full_exit_does_not_permanently_block_new_entries(lifecycle_repo):
+    from accounting_helpers import reservation
+
+    from trading_bot.domain.records import RiskApproval
+
+    lifecycle, repo, clock = confirmed(lifecycle_repo)
+    verify(lifecycle, "SERIAL_CANCEL_THEN_MARKET_VERIFIED")
+    fake = execution_module("execution.fake_lifecycle").FakeLifecycleExchange(writer=writer(repo))
+    cancel = lifecycle.request_exit(request(), clock)[0]
+    fake.execute(lifecycle, cancel.command_id, clock)
+    lifecycle.observe_stop(stop_observation(lifecycle.get(BTC), "CANCELED", "0", True), clock)
+    sell = lifecycle.request_exit(request(), clock)[0]
+    fake.execute(lifecycle, sell.command_id, clock)
+    assert lifecycle.assess(BTC, clock).context.protection.target.amount == 0
+    item = replace(reservation(repo.ledger), reservation_id="r2", intent_id="i2", order_id="o2")
+    approval = RiskApproval(
+        "approval2",
+        BTC,
+        "BUY",
+        Quantity(D("4"), "BTC"),
+        Money(D("40"), "Q"),
+        item.risk,
+        Money(D("10"), "Q"),
+        Money(D("9"), "Q"),
+        item.ledger_version,
+        "synthetic-offline",
+        item.expires_at,
+        False,
+    )
+    next_entry = repo.prepare_intent(
+        approval,
+        item,
+        '{"client_order_id":"o2","type":"LIMIT","time_in_force":"FOK"}',
+        now=clock.utc_now(),
+    )
+    assert next_entry.status == "PREPARED"

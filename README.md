@@ -83,6 +83,6 @@ Testy integracyjne nie są pomijane przy braku bazy: bez `P02_TEST_DSN` pełny s
 
 Generowane testy sprawdzają pełny replay po kolejnych zdarzeniach i na lokalnym środowisku mogą zająć około 2–3 minut. Ich deadline Hypothesis jest wyłączony: sprawdzają semantykę, bez kwalifikacji opóźnień ani przepustowości runtime live.
 
-## Częściowy lifecycle P03 offline
+## Lifecycle P03 offline
 
-P03.1–P03.5 obejmuje durable intents, obserwacje zleceń, ochronę, dwie jawne polityki wyjścia oraz single writer/fencing wyłącznie na fake exchange/PostgreSQL. G3 niezaliczone; P03.6 i P04 nie rozpoczęto. Default profiles pozostają wyłączone dla execution; V01–V11 UNKNOWN, live BLOCKED. Granice i wyniki: [P03.1–P03.2](docs/runbooks/p03-1-2-execution-lifecycle.md), [P03.3–P03.4](docs/runbooks/p03-3-4-protection-exits.md), [corrective review P03.3–P03.4](docs/runbooks/p03-3-4-corrective-review.md), [P03.5 ownership/fencing](docs/runbooks/p03-5-writer-ownership.md).
+P03.1–P03.6 obejmuje durable intents, obserwacje zleceń, ochronę, dwie jawne polityki wyjścia oraz single writer/fencing wyłącznie na fake exchange/PostgreSQL. G3 PASS wyłącznie dla fake/offline/PostgreSQL po finalnym review i naprawach P03.6. P04 nie rozpoczęto. Default profiles pozostają wyłączone dla execution; V01–V11 UNKNOWN, live BLOCKED. Granice i wyniki: [P03.1–P03.2](docs/runbooks/p03-1-2-execution-lifecycle.md), [P03.3–P03.4](docs/runbooks/p03-3-4-protection-exits.md), [corrective review P03.3–P03.4](docs/runbooks/p03-3-4-corrective-review.md), [P03.5 ownership/fencing](docs/runbooks/p03-5-writer-ownership.md), [final verification P03 / G3](docs/runbooks/p03-final-verification.md).

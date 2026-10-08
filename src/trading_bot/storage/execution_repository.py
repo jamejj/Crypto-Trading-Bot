@@ -2,11 +2,13 @@
 
 import json
 from dataclasses import replace
+from datetime import timedelta
 
 from trading_bot.domain.records import OrderIntent, RiskApproval
 from trading_bot.domain.serialization import utc
 from trading_bot.execution.intents import prepare_intent
-from trading_bot.execution.reducer import OrderState, apply
+from trading_bot.execution.reducer import TERMINAL, OrderState, apply
+from trading_bot.execution.submission import SubmitWindow, UnresolvedSubmit
 
 from .ledger_repository import LedgerRepository
 from .transactions import encode_arguments, transaction
@@ -47,15 +49,119 @@ class ExecutionRepository:
             )
         self.ledger._project(conn, book)
 
-    def _unresolved(self, conn, exclude=None):
-        return (
-            conn.execute(
-                "SELECT 1 FROM execution_outbox WHERE account_id=%s "
-                "AND state IN ('DISPATCHING','SUBMISSION_UNKNOWN') AND intent_id<>%s LIMIT 1",
-                (self.account_id, exclude or ""),
-            ).fetchone()
-            is not None
+    def _pending_submits(self, conn):
+        rows = conn.execute(
+            "SELECT o.intent_id,o.state,p.projection,w.evidence FROM execution_outbox o "
+            "JOIN execution_orders p USING(account_id,intent_id) "
+            "LEFT JOIN execution_submit_windows w USING(account_id,intent_id) "
+            "WHERE o.account_id=%s ORDER BY o.intent_id",
+            (self.account_id,),
+        ).fetchall()
+        pending = []
+        for intent_id, status, projection, window in rows:
+            order = OrderState.from_json(json.dumps(projection))
+            actual = order.filled.amount if order.filled else 0
+            missing = any(o.cumulative_quantity.amount > actual for o in order.observations)
+            attempted = status in {"DISPATCHING", "SUBMISSION_UNKNOWN", "RESOLVED"}
+            if attempted and (status != "RESOLVED" or order.status not in TERMINAL or missing):
+                pending.append(
+                    (
+                        intent_id,
+                        status,
+                        missing,
+                        SubmitWindow.from_json(json.dumps(window)) if window else None,
+                    )
+                )
+        return pending
+
+    def _unresolved(self, conn, exclude=None, now=None):
+        for intent_id, status, missing, window in self._pending_submits(conn):
+            if intent_id != exclude and (
+                missing
+                or status != "RESOLVED"
+                or window is None
+                or (now is not None and utc(now) >= window.deadline)
+            ):
+                return True
+        if conn.execute("SELECT to_regclass('instrument_lifecycle')").fetchone()[0] is not None:
+            from trading_bot.execution.protection import ProtectionClock, assess_protection
+            from trading_bot.operations.clock import SimulationClock
+            from trading_bot.storage.lifecycle_repository import LifecycleRepository, LifecycleState
+
+            book = self.ledger._replay(conn)
+            lifecycle = LifecycleRepository(self)
+            rows = conn.execute(
+                "SELECT projection FROM instrument_lifecycle WHERE account_id=%s",
+                (self.account_id,),
+            ).fetchall()
+            for row in rows:
+                instrument = LifecycleState.from_json(json.dumps(row[0])).context.instrument
+                state = lifecycle._load(conn, instrument)
+                protection = assess_protection(
+                    book.snapshot, state.context, ProtectionClock(SimulationClock(utc(now)))
+                )
+                if (
+                    protection.uncovered.amount > 0
+                    or (
+                        state.exit_request
+                        and (
+                            protection.target.amount > 0
+                            or state.sell_status in {"PENDING", "UNKNOWN"}
+                        )
+                    )
+                    or state.replacing
+                    or state.context.stop_status == "UNKNOWN"
+                ):
+                    return True
+        return False
+
+    def _record_window(self, conn, intent_id, received_at):
+        row = conn.execute(
+            "SELECT o.state,w.evidence FROM execution_outbox o "
+            "LEFT JOIN execution_submit_windows w USING(account_id,intent_id) "
+            "WHERE o.account_id=%s AND o.intent_id=%s",
+            (self.account_id, intent_id),
+        ).fetchone()
+        if row[1] is not None:
+            return
+        if row[0] != "PREPARED":
+            raise ValueError("attempt lacks original deadline; manual review required")
+        window = SubmitWindow(
+            self.account_id, intent_id, utc(received_at), utc(received_at) + timedelta(seconds=5)
         )
+        conn.execute(
+            "INSERT INTO execution_submit_windows VALUES (%s,%s,%s::jsonb) ON CONFLICT DO NOTHING",
+            (self.account_id, intent_id, window.to_json()),
+        )
+
+    def submit_window(self, intent_id):
+        with transaction(self.connect) as conn:
+            row = conn.execute(
+                "SELECT evidence FROM execution_submit_windows "
+                "WHERE account_id=%s AND intent_id=%s",
+                (self.account_id, intent_id),
+            ).fetchone()
+            return SubmitWindow.from_json(json.dumps(row[0])) if row else None
+
+    def assess_unresolved(self, clock):
+        """Explicit offline assessment, not an automatic retry/recovery worker."""
+        with transaction(self.connect) as conn:
+            self._book(conn)
+            result = []
+            for intent_id, _, _, window in self._pending_submits(conn):
+                if window is None:
+                    raise ValueError(
+                        "unresolved pre-migration attempt lacks deadline; manual review required"
+                    )
+                overdue = clock.overdue(window.deadline)
+                result.append(UnresolvedSubmit(window, overdue))
+                if overdue:
+                    conn.execute(
+                        "UPDATE execution_outbox SET state='SUBMISSION_UNKNOWN' "
+                        "WHERE account_id=%s AND intent_id=%s",
+                        (self.account_id, intent_id),
+                    )
+            return tuple(result)
 
     def prepare_intent(self, approval, reservation, payload, *, now):
         intent = prepare_intent(approval, reservation, payload, now=now)
@@ -63,7 +169,7 @@ class ExecutionRepository:
             raise ValueError("account scope conflict")
         with transaction(self.connect) as conn:
             book = self._book(conn)
-            if self._unresolved(conn):
+            if self._unresolved(conn, now=now):
                 raise ValueError("unresolved create blocks account entries")
             version, count = book.version, len(book.entries)
             book.reserve(reservation, reservation.ledger_version)
@@ -146,14 +252,70 @@ class ExecutionRepository:
                     (self.account_id, intent_id),
                 )
                 return False
-            if self._unresolved(conn, intent_id):
+            if self._unresolved(conn, intent_id, now):
                 return False
+            self._record_window(conn, intent_id, now)
             row = conn.execute(
                 "UPDATE execution_outbox SET state='DISPATCHING' WHERE "
                 "account_id=%s AND intent_id=%s AND state='PREPARED' RETURNING 1",
                 (self.account_id, intent_id),
             ).fetchone()
             return row is not None
+
+    def _transmit(self, intent, now, callback):
+        """One-shot fake admission, durable UNKNOWN before the external effect."""
+        with transaction(self.connect) as conn:
+            self._book(conn)
+            row = conn.execute(
+                "SELECT intent,approval,state FROM execution_intents "
+                "JOIN execution_outbox USING(account_id,intent_id) "
+                "WHERE account_id=%s AND intent_id=%s",
+                (self.account_id, intent.intent_id),
+            ).fetchone()
+            if row is None or row[2] != "DISPATCHING":
+                raise PermissionError("durable one-shot claim required")
+            window = conn.execute(
+                "SELECT evidence FROM execution_submit_windows "
+                "WHERE account_id=%s AND intent_id=%s",
+                (self.account_id, intent.intent_id),
+            ).fetchone()
+            if window is None or utc(now) >= SubmitWindow.from_json(json.dumps(window[0])).deadline:
+                raise PermissionError("durable attempt window/deadline required and unexpired")
+            durable = OrderIntent.from_json(json.dumps(row[0]))
+            approval = RiskApproval.from_json(json.dumps(row[1]))
+            if replace(intent, status=durable.status) != durable or intent.side != "BUY":
+                raise ValueError("transmission differs from immutable entry intent")
+            if conn.execute("SELECT to_regclass('instrument_lifecycle')").fetchone()[0] is None:
+                raise PermissionError("configured protection required before transmission")
+            configured = conn.execute(
+                "SELECT 1 FROM instrument_lifecycle WHERE account_id=%s AND instrument=%s",
+                (self.account_id, intent.instrument.to_json()),
+            ).fetchone()
+            if configured is None:
+                raise PermissionError("configured protection required before transmission")
+            # Validate the durable context against its immutable audit as well.
+            from trading_bot.storage.lifecycle_repository import LifecycleRepository
+
+            LifecycleRepository(self)._load(conn, intent.instrument)
+            if approval.expires_at <= utc(now):
+                raise ValueError("entry transmission expired")
+            conn.execute(
+                "UPDATE execution_outbox SET state='SUBMISSION_UNKNOWN' "
+                "WHERE account_id=%s AND intent_id=%s",
+                (self.account_id, intent.intent_id),
+            )
+        # Recheck under the account lock: intervening fill/order evidence wins.
+        with transaction(self.connect) as conn:
+            self._book(conn)
+            row = conn.execute(
+                "SELECT state FROM execution_outbox WHERE account_id=%s AND intent_id=%s",
+                (self.account_id, intent.intent_id),
+            ).fetchone()
+            if row != ("SUBMISSION_UNKNOWN",):
+                raise PermissionError("order evidence superseded transmission")
+            if self._unresolved(conn, intent.intent_id, now):
+                raise PermissionError("unresolved/uncovered exposure blocks transmission")
+            return callback(intent)
 
     def recover_ambiguous(self):
         with transaction(self.connect) as conn:
@@ -173,12 +335,31 @@ class ExecutionRepository:
                 (self.account_id, intent_id),
             )
 
-    def apply_event(self, intent_id, event):
+    def apply_event(self, intent_id, event, *, protection_clock=None):
         with transaction(self.connect) as conn:
             book = self._book(conn)
-            return self._apply_event(conn, book, intent_id, event)
+            from trading_bot.execution.protection import ProtectionClock
+            from trading_bot.operations.clock import RealClock
 
-    def _apply_event(self, conn, book, intent_id, event):
+            clock = protection_clock or ProtectionClock(RealClock())
+            state = self._apply_event(conn, book, intent_id, event, clock.utc_now())
+            # All public entry evidence paths update configured protection atomically.
+            if conn.execute("SELECT to_regclass('instrument_lifecycle')").fetchone()[0] is not None:
+                configured = conn.execute(
+                    "SELECT 1 FROM instrument_lifecycle WHERE account_id=%s AND instrument=%s",
+                    (self.account_id, event.instrument.to_json()),
+                ).fetchone()
+                if configured:
+                    from trading_bot.storage.lifecycle_repository import LifecycleRepository
+
+                    lifecycle = LifecycleRepository(self)
+                    current = lifecycle._load(conn, event.instrument)
+                    current = lifecycle._assess(conn, book, current, clock)
+                    current = lifecycle._manage(conn, book, current, clock)
+                    lifecycle._save(conn, current, event)
+            return state
+
+    def _apply_event(self, conn, book, intent_id, event, received_at):
         version, count = book.version, len(book.entries)
         row = conn.execute(
             "SELECT projection FROM execution_orders WHERE "
@@ -188,6 +369,7 @@ class ExecutionRepository:
         if row is None:
             raise ValueError("unknown intent")
         state = apply(OrderState.from_json(json.dumps(row[0])), event, book)
+        self._record_window(conn, intent_id, received_at)
         self._persist(conn, book, version, count)
         conn.execute(
             "INSERT INTO execution_observations(account_id,intent_id,event) "

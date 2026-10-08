@@ -168,3 +168,142 @@ def test_fill_economics_and_order_projection_roll_back_together(execution_repo, 
     assert writer.get_state(intent.intent_id) == before_order
     with connection() as conn:
         assert conn.execute("SELECT count(*) FROM execution_observations").fetchone() == (0,)
+
+
+def test_sell_entry_intent_cannot_bypass_disabled_exit_policy(execution_repo):
+    from dataclasses import replace
+
+    from accounting_helpers import BTC, NOW, D, fill, reservation
+
+    from trading_bot.domain.money import Money, Quantity
+    from trading_bot.domain.records import RiskApproval
+
+    repo, connection = execution_repo
+    repo.ledger.post_fill(fill(qty="4"))
+    item = replace(reservation(repo.ledger), side="SELL", cash=Money(D("0"), "Q"))
+    approval = RiskApproval(
+        "sell-approval",
+        BTC,
+        "SELL",
+        Quantity(D("4"), "BTC"),
+        Money(D("0"), "Q"),
+        item.risk,
+        Money(D("10"), "Q"),
+        Money(D("9"), "Q"),
+        item.ledger_version,
+        "synthetic-offline",
+        item.expires_at,
+        False,
+    )
+    before = repo.ledger.snapshot
+    with pytest.raises(ValueError, match="BUY|entry|coordinat"):
+        repo.prepare_intent(
+            approval, item, '{"client_order_id":"o1","type":"LIMIT","time_in_force":"FOK"}', now=NOW
+        )
+    assert repo.ledger.snapshot == before
+    with connection() as conn:
+        assert conn.execute("SELECT count(*) FROM execution_outbox").fetchone() == (0,)
+
+
+def test_submit_deadline_is_durable_and_not_reset_by_ack_or_restart(execution_repo):
+    from datetime import timedelta
+
+    from accounting_helpers import NOW, D
+    from execution_helpers import execution_module, observation
+
+    from trading_bot.operations.clock import SimulationClock
+
+    repo, _ = execution_repo
+    intent = prepare(repo)
+    repo.claim(intent.intent_id, now=NOW)
+    assert hasattr(repo, "submit_window"), "missing durable unresolved submit deadline"
+    first = repo.submit_window(intent.intent_id)
+    assert first.started_at == NOW
+    assert first.deadline == NOW + timedelta(seconds=5)
+    p = execution_module("execution.protection")
+    clock = p.ProtectionClock(SimulationClock(NOW + timedelta(seconds=4)))
+    repo.apply_event(intent.intent_id, observation(), protection_clock=clock)
+    restarted = type(repo)(repo.connect, "a", "Q")
+    assert restarted.submit_window(intent.intent_id) == first
+    clock.clock.advance(D("2"))
+    pending = restarted.assess_unresolved(clock)
+    assert len(pending) == 1 and pending[0].overdue
+    assert restarted.get_intent(intent.intent_id).status == "SUBMISSION_UNKNOWN"
+    assert restarted.submit_window(intent.intent_id) == first
+
+
+def test_terminal_cumulative_without_trades_blocks_next_entry(execution_repo):
+    from dataclasses import replace
+
+    from accounting_helpers import BTC, NOW, D, reservation
+    from execution_helpers import observation
+
+    from trading_bot.domain.money import Money, Quantity
+    from trading_bot.domain.records import RiskApproval
+
+    repo, _ = execution_repo
+    intent = prepare(repo)
+    repo.claim(intent.intent_id, now=NOW)
+    repo.apply_event(intent.intent_id, observation("CANCELED", "2", True))
+    item = replace(reservation(repo.ledger), reservation_id="r2", intent_id="i2", order_id="o2")
+    approval = RiskApproval(
+        "approval2",
+        BTC,
+        "BUY",
+        Quantity(D("4"), "BTC"),
+        Money(D("40"), "Q"),
+        item.risk,
+        Money(D("10"), "Q"),
+        Money(D("9"), "Q"),
+        item.ledger_version,
+        "synthetic-offline",
+        item.expires_at,
+        False,
+    )
+    with pytest.raises(ValueError, match="unresolved"):
+        repo.prepare_intent(
+            approval, item, '{"client_order_id":"o2","type":"LIMIT","time_in_force":"FOK"}', now=NOW
+        )
+
+
+def test_claim_window_is_immutable_and_first_proof_uses_receipt_clock(execution_repo):
+    from datetime import timedelta
+
+    from accounting_helpers import NOW
+    from execution_helpers import observation
+
+    from trading_bot.execution.protection import ProtectionClock
+    from trading_bot.operations.clock import SimulationClock
+
+    repo, connection = execution_repo
+    intent = prepare(repo)
+    clock = ProtectionClock(SimulationClock(NOW + timedelta(seconds=3)))
+    repo.apply_event(intent.intent_id, observation(), protection_clock=clock)
+    window = repo.submit_window(intent.intent_id)
+    assert window.started_at == clock.utc_now()
+    assert not repo.claim(intent.intent_id, now=NOW)
+    with pytest.raises(psycopg.Error, match="immutable"):
+        with connection() as conn:
+            conn.execute("UPDATE execution_submit_windows SET evidence=evidence")
+    assert repo.submit_window(intent.intent_id) == window
+    clock.overdue(window.deadline)
+    clock.clock.jump_utc(NOW - timedelta(days=1))
+    from accounting_helpers import D
+
+    clock.clock.advance(D("6"))
+    assert repo.assess_unresolved(clock)[0].overdue
+    assert repo.ledger.snapshot.reservations[0].cash.amount == 40
+
+
+def test_legacy_attempt_without_window_cannot_invent_deadline_from_new_ack(execution_repo):
+    from execution_helpers import observation
+
+    repo, connection = execution_repo
+    intent = prepare(repo)
+    # Simulate a pre-002d crash record; its actual first-attempt time is unknown.
+    with connection() as conn:
+        conn.execute("UPDATE execution_outbox SET state='DISPATCHING'")
+    with pytest.raises(ValueError, match="deadline|manual"):
+        repo.apply_event(intent.intent_id, observation())
+    assert repo.submit_window(intent.intent_id) is None
+    assert repo.get_intent(intent.intent_id).status == "DISPATCHING"

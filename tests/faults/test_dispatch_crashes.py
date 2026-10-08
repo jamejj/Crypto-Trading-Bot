@@ -36,6 +36,13 @@ def test_restart_never_resends_ambiguous_create(execution_repo, boundary, submit
     if status != "PREPARED":
         assert fresh.dispatch(intent.intent_id) is False
     assert len(exchange.submissions) == submits
+    from datetime import timedelta
+
+    window = restarted.submit_window(intent.intent_id)
+    if boundary == "PREPARED":
+        assert window is None
+    else:
+        assert window.started_at == NOW and window.deadline == NOW + timedelta(seconds=5)
 
 
 def test_transport_timeout_retains_reservation_without_retry(execution_repo):
@@ -78,3 +85,81 @@ def test_prepared_with_existing_order_evidence_never_submits(execution_repo, kin
     assert exchange.submissions == []
     assert repo.get_intent(intent.intent_id).status == "RESOLVED"
     assert repo.ledger.snapshot.reservations[0].status == "PENDING"
+
+
+@pytest.mark.parametrize("claimed", [False, True])
+def test_public_submit_without_durable_send_admission_is_forbidden(execution_repo, claimed):
+    from execution_helpers import writer
+
+    repo, _ = execution_repo
+    intent = prepare(repo)
+    if claimed:
+        repo.claim(intent.intent_id, now=NOW)
+    module = execution_module("execution.dispatcher")
+    exchange = module.FakeExchange((observation(),), writer=writer(repo))
+    with pytest.raises(PermissionError):
+        exchange.submit(intent)
+    assert exchange.submissions == []
+
+
+def test_admitted_public_submit_is_one_shot_even_without_dispatcher(execution_repo):
+    repo, _ = execution_repo
+    intent = prepare(repo)
+    repo.claim(intent.intent_id, now=NOW)
+    module = execution_module("execution.dispatcher")
+    exchange = module.FakeExchange(writer=writer(repo))
+    exchange.submit(repo.get_intent(intent.intent_id), repository=repo, now=NOW)
+    with pytest.raises(PermissionError, match="one-shot"):
+        exchange.submit(repo.get_intent(intent.intent_id), repository=repo, now=NOW)
+    assert len(exchange.submissions) == 1
+    assert repo.get_intent(intent.intent_id).status == "SUBMISSION_UNKNOWN"
+
+
+def test_public_submit_rejects_counterfeit_admission_repository(execution_repo):
+    repo, _ = execution_repo
+    intent = prepare(repo)
+    module = execution_module("execution.dispatcher")
+    exchange = module.FakeExchange(writer=writer(repo))
+
+    class Counterfeit:
+        account_id = "a"
+
+        def _transmit(self, item, now, callback):
+            return callback(item)
+
+    with pytest.raises(PermissionError, match="durable"):
+        exchange.submit(intent, repository=Counterfeit(), now=NOW)
+    assert exchange.submissions == []
+
+
+def test_owned_send_without_configured_protection_is_forbidden(execution_repo):
+    repo, _ = execution_repo
+    intent = prepare(repo)
+    repo.claim(intent.intent_id, now=NOW)
+    ownership = execution_module("execution.ownership")
+    control = ownership.OwnershipControl(repo.connect, "a", ownership.FakeFenceAuthority())
+    guard = control.manual_initial("fixture", "process", "explicit fixture grant")
+    exchange = execution_module("execution.dispatcher").FakeExchange(writer=guard)
+    with pytest.raises(PermissionError, match="protection"):
+        exchange.submit(repo.get_intent(intent.intent_id), repository=repo, now=NOW)
+    assert exchange.submissions == []
+
+
+@pytest.mark.parametrize("missing_window", [False, True])
+def test_send_needs_unexpired_durable_attempt_window(execution_repo, missing_window):
+    from datetime import timedelta
+
+    repo, connection = execution_repo
+    intent = prepare(repo)
+    exchange = execution_module("execution.dispatcher").FakeExchange(writer=writer(repo))
+    if missing_window:
+        with connection() as conn:
+            conn.execute("UPDATE execution_outbox SET state='DISPATCHING'")
+    else:
+        repo.claim(intent.intent_id, now=NOW)
+    with pytest.raises(PermissionError, match="deadline|window"):
+        exchange.submit(
+            repo.get_intent(intent.intent_id), repository=repo, now=NOW + timedelta(seconds=6)
+        )
+    assert exchange.submissions == []
+    assert repo.ledger.snapshot.reservations[0].cash.amount == 40

@@ -3,10 +3,11 @@ from threading import Barrier
 
 import pytest
 from accounting_helpers import NOW
-from execution_helpers import execution_module, observation, prepare
+from execution_helpers import configure_transport, execution_module, observation, prepare
 
 
 def control(repo, authority=None):
+    configure_transport(repo)
     m = execution_module("execution.ownership")
     authority = authority or m.FakeFenceAuthority()
     return m.OwnershipControl(repo.connect, repo.account_id, authority), authority

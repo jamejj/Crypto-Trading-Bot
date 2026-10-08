@@ -248,7 +248,28 @@ class LifecycleRepository:
             )
         )
         if state.sell_status == "FILLED" and protection.target.amount > ZERO:
-            return replace(state, incident="BLOCKED_RESIDUAL_AFTER_EXIT")
+            # The prior SELL is economically terminal. Its remaining inventory
+            # stays on the original lot timers and needs a new exclusive stop.
+            state = replace(
+                state,
+                exit_request=None,
+                sell_id="",
+                sell_status="NONE",
+                replacing=False,
+                stop_observation=None,
+                reconciled_version=None,
+                absence=None,
+                incident="",
+                context=replace(
+                    state.context,
+                    stop_id="",
+                    stop_status="NONE",
+                    stop_quantity=None,
+                    confirmed_valid=False,
+                ),
+            )
+            state = self._assess(conn, book, state, clock)
+            return self._manage(conn, book, state, clock)
         if overdue and protection.target.amount > ZERO and not state.exit_request:
             deadline = min(
                 (d.deadline for d in protection.lot_deadlines),
@@ -342,7 +363,7 @@ class LifecycleRepository:
         with transaction(self.connect) as conn:
             book = self.execution._book(conn)
             state = self._load(conn, event.instrument)
-            order = self.execution._apply_event(conn, book, intent_id, event)
+            order = self.execution._apply_event(conn, book, intent_id, event, clock.utc_now())
             state = self._assess(conn, book, state, clock)
             state = self._manage(conn, book, state, clock)
             self._save(conn, state, event)
@@ -439,7 +460,12 @@ class LifecycleRepository:
                 ):
                     raise ValueError("stop parameters do not confirm legal protection")
                 valid = observation.cumulative_quantity == actual
-                status = "CONFIRMED" if valid else "UNKNOWN"
+                if context.stop_status == "CANCEL_PENDING":
+                    status, valid = "CANCEL_PENDING", False
+                elif state.replacing or state.sell_status in {"PENDING", "UNKNOWN"}:
+                    status, valid = context.stop_status, False
+                else:
+                    status = "CONFIRMED" if valid else "UNKNOWN"
             elif status not in {
                 "CANCEL_PENDING",
                 "CANCELED",
@@ -473,28 +499,35 @@ class LifecycleRepository:
         with transaction(self.connect) as conn:
             book = self.execution._book(conn)
             state = self._load(conn, fill.instrument)
-            if (
-                fill.account_id != self.account
-                or fill.order_id != state.context.stop_id
-                or fill.side != "SELL"
-            ):
-                raise ValueError("stop fill scope conflict")
-            self._operation(conn, book, "post_fill", fill)
-            # Active coverage means outstanding quantity, not original requested quantity.
-            original = next(
-                c for c in self.commands_in(conn, fill.instrument) if c.command_id == fill.order_id
-            )
-            remaining = sub(
-                original.quantity.amount, self._actual(book, fill.instrument, fill.order_id).amount
-            )
-            state = replace(
-                state,
-                context=replace(
-                    state.context, stop_quantity=Quantity(remaining, fill.instrument.base)
+            owned = next(
+                (
+                    c
+                    for c in self.commands_in(conn, fill.instrument)
+                    if c.command_id == fill.order_id and c.kind == "CREATE_STOP"
                 ),
-                reconciled_version=None,
+                None,
             )
+            if fill.account_id != self.account or fill.side != "SELL" or owned is None:
+                raise ValueError("stop fill scope conflict")
+            historical = fill.order_id != state.context.stop_id
+            if historical and (fill.account_id, fill.instrument, fill.trade_id) not in book.fills:
+                raise ValueError("new retired-stop trade requires divergence reconciliation")
+            self._operation(conn, book, "post_fill", fill)
+            if not historical:
+                remaining = sub(
+                    owned.quantity.amount,
+                    self._actual(book, fill.instrument, fill.order_id).amount,
+                )
+                state = replace(
+                    state,
+                    context=replace(
+                        state.context, stop_quantity=Quantity(remaining, fill.instrument.base)
+                    ),
+                    reconciled_version=None,
+                )
+            # Known historical redelivery/fee enrichment changes economics, not current stop ID/qty.
             state = self._assess(conn, book, state, clock, create=False)
+            state = self._manage(conn, book, state, clock)
             self._save(conn, state, fill)
             return state
 
