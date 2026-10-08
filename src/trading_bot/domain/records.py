@@ -93,6 +93,8 @@ class Fee(Record):
 
 @dataclass(frozen=True)
 class Fill(Record):
+    SCHEMA_VERSION = 2
+    READABLE_SCHEMAS = (1, 2)
     source_id: str
     account_id: str
     instrument: InstrumentId
@@ -102,6 +104,8 @@ class Fill(Record):
     price: Money
     fees: tuple[Fee, ...]
     event_time: datetime
+    trade_id: str | None = None
+    fee_final: bool = False
 
     def __post_init__(self):
         super().__post_init__()
@@ -135,6 +139,8 @@ class OrderObservation(Record):
 
 @dataclass(frozen=True)
 class Reservation(Record):
+    SCHEMA_VERSION = 2
+    READABLE_SCHEMAS = (1, 2)
     reservation_id: str
     intent_id: IntentId
     cash: Money
@@ -142,15 +148,28 @@ class Reservation(Record):
     ledger_version: int
     expires_at: datetime
     status: str
+    account_id: str | None = None
+    order_id: str | None = None
+    instrument: InstrumentId | None = None
+    side: str | None = None
+    quantity: Quantity | None = None
+    fee_buffers: tuple[Money, ...] = ()
 
 
 @dataclass(frozen=True)
 class InventoryLot(Record):
+    SCHEMA_VERSION = 2
+    READABLE_SCHEMAS = (1, 2)
     lot_id: str
     fill_id: str
     instrument: InstrumentId
     quantity: Quantity
     acquired_at: datetime
+    cost: Money | None = None
+    fees: tuple[Fee, ...] = ()
+    risk: Money | None = None
+    dust: bool = False
+    origin_instrument: InstrumentId | None = None
 
 
 @dataclass(frozen=True)
@@ -260,11 +279,14 @@ class MarketSnapshot(Record):
 
 @dataclass(frozen=True)
 class CostEstimate(Record):
+    SCHEMA_VERSION = 2
+    READABLE_SCHEMAS = (1, 2)
     samples: tuple[Money, ...]
     sizing_percentile: Decimal
     sizing_cost: Money
     source: str
     uncertainty_reasons: tuple[str, ...]
+    basis: str = "TRIGGER_SHORTFALL"
 
 
 @dataclass(frozen=True)
@@ -404,3 +426,13 @@ class ExchangePort(Protocol):
 class MarketDataPort(Protocol):
     def subscribe(self, scope: str) -> tuple[EventEnvelope, ...]: ...
     def snapshot(self, instrument: InstrumentId) -> MarketSnapshot: ...
+
+
+@dataclass(frozen=True)
+class FundingEvidence(Record):
+    evidence_id: str
+    account_id: str
+    ledger_version: int
+    paused: bool
+    reconciled: bool
+    observed_at: datetime
