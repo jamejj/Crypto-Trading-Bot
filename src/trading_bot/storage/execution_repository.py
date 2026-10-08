@@ -176,32 +176,34 @@ class ExecutionRepository:
     def apply_event(self, intent_id, event):
         with transaction(self.connect) as conn:
             book = self._book(conn)
-            version, count = book.version, len(book.entries)
-            row = conn.execute(
-                "SELECT projection FROM execution_orders WHERE "
-                "account_id=%s AND intent_id=%s FOR UPDATE",
-                (self.account_id, intent_id),
-            ).fetchone()
-            if row is None:
-                raise ValueError("unknown intent")
-            state = apply(OrderState.from_json(json.dumps(row[0])), event, book)
-            self._persist(conn, book, version, count)
-            conn.execute(
-                "INSERT INTO execution_observations(account_id,intent_id,event) "
-                "VALUES (%s,%s,%s::jsonb)",
-                (self.account_id, intent_id, event.to_json()),
-            )
-            conn.execute(
-                "UPDATE execution_orders SET projection=%s::jsonb WHERE "
-                "account_id=%s AND intent_id=%s",
-                (state.to_json(), self.account_id, intent_id),
-            )
-            # A valid scoped trade/order observation proves an existing order even
-            # when it reaches us before the local dispatcher response.
-            conn.execute(
-                "UPDATE execution_outbox SET state='RESOLVED' WHERE "
-                "account_id=%s AND intent_id=%s AND "
-                "state IN ('PREPARED','DISPATCHING','SUBMISSION_UNKNOWN')",
-                (self.account_id, intent_id),
-            )
-            return state
+            return self._apply_event(conn, book, intent_id, event)
+
+    def _apply_event(self, conn, book, intent_id, event):
+        version, count = book.version, len(book.entries)
+        row = conn.execute(
+            "SELECT projection FROM execution_orders WHERE "
+            "account_id=%s AND intent_id=%s FOR UPDATE",
+            (self.account_id, intent_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("unknown intent")
+        state = apply(OrderState.from_json(json.dumps(row[0])), event, book)
+        self._persist(conn, book, version, count)
+        conn.execute(
+            "INSERT INTO execution_observations(account_id,intent_id,event) "
+            "VALUES (%s,%s,%s::jsonb)",
+            (self.account_id, intent_id, event.to_json()),
+        )
+        conn.execute(
+            "UPDATE execution_orders SET projection=%s::jsonb WHERE account_id=%s AND intent_id=%s",
+            (state.to_json(), self.account_id, intent_id),
+        )
+        # A valid scoped trade/order observation proves an existing order even
+        # when it reaches us before the local dispatcher response.
+        conn.execute(
+            "UPDATE execution_outbox SET state='RESOLVED' WHERE "
+            "account_id=%s AND intent_id=%s AND "
+            "state IN ('PREPARED','DISPATCHING','SUBMISSION_UNKNOWN')",
+            (self.account_id, intent_id),
+        )
+        return state
