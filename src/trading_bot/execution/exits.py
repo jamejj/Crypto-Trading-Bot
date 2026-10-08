@@ -18,6 +18,12 @@ class SyntheticExitVerification(Record):
     policy: str
     artifact: str
     verified: bool
+    replacement_verified: bool = False
+    absent_stop_market_verified: bool = False
+    venue_source: str = "synthetic:venue"
+    replacement_artifact: str = ""
+    emergency_artifact: str = ""
+    native_atomic_emergency_verified: bool = False
 
 
 @dataclass(frozen=True)

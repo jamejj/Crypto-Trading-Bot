@@ -208,7 +208,7 @@ Dodatkowe identyfikatory (`SetupId`, `IntentId`, `RunId`, `Cursor`) są typowany
 - [ ] P03.5: test dwóch dispatcherów oraz utraty ownership; pojedynczy writer i brak automatycznego takeover. Dodać runbook odcięcia starego procesu; DB lease nie jest jedyną ochroną przed drugim hostem.
 - [ ] P03.6: `pytest tests/unit/test_order_reducer.py tests/unit/test_protection.py tests/unit/test_exit_coordinator.py tests/integration/test_intent_outbox.py tests/faults/test_dispatch_crashes.py -q`; review invariants E01–E05 i commit.
 
-**Częściowy odbiór (2026-10-08):** P03.1–P03.2 zakończono; [raport](../../runbooks/p03-1-2-execution-lifecycle.md). Narrow OrderState/ledger helper nie kończy jeszcze planowanego czystego interfejsu event/proposals. P03.3–P03.4 następnie zakończono na tej samej gałęzi bez resetu P03.1–P03.2; [raport protection/exits](../../runbooks/p03-3-4-protection-exits.md). G3 pozostaje niezaliczone; P03.5–P03.6 nie rozpoczęto.
+**Częściowy odbiór (2026-10-08):** P03.1–P03.2 zakończono; [raport](../../runbooks/p03-1-2-execution-lifecycle.md). Narrow OrderState/ledger helper nie kończy jeszcze planowanego czystego interfejsu event/proposals. P03.3–P03.4 następnie zakończono na tej samej gałęzi bez resetu P03.1–P03.2; [raport protection/exits](../../runbooks/p03-3-4-protection-exits.md). Corrective review P03.3–P03.4 uzupełnia replacement oraz emergency exit przy NONE; [raport naprawczy](../../runbooks/p03-3-4-corrective-review.md). G3 pozostaje niezaliczone; P03.5–P03.6 nie rozpoczęto.
 
 **DoD:** pełny lifecycle na fake exchange, brak duplicate economic effects i blind retries; okna uncovered oraz unresolved są jawne i mają trwałe deadlines.
 

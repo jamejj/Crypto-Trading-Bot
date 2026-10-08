@@ -50,11 +50,13 @@ class ProtectionContext(Record):
     stop_status: str = "NONE"
     stop_quantity: Quantity | None = None
     confirmed_valid: bool = False
+    exit_minimum: Decimal = Decimal("1")
 
     def __post_init__(self):
         super().__post_init__()
         if (
             self.minimum <= ZERO
+            or self.exit_minimum <= ZERO
             or self.trigger.amount <= ZERO
             or self.trigger.currency != self.instrument.quote
         ):

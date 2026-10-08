@@ -2,6 +2,12 @@
 
 ## Zakres i baza
 
+Ten raport opisuje pierwotny commit `ed1a463`. Późniejszy corrective review
+ujawnił brak rzeczywistej gałęzi ACTIVE w regresji oraz niekompletny replacement
+i emergency exit dla NONE. Wcześniejsze uznanie braku replacement za dopuszczalne
+odroczenie zostało wycofane. Aktualne zachowanie i wyniki opisuje
+[raport corrective review](p03-3-4-corrective-review.md).
+
 Wykonano wyłącznie P03.3–P03.4 na istniejącej gałęzi
 `codex/p03-execution-lifecycle`, po `83ad40d`. P03.1–P03.2 zachowano.
 Jedyna zmiana ich implementacji to wydzielenie prywatnego `_apply_event`,
