@@ -1,6 +1,6 @@
 # Crypto Trading Bot
 
-P01: fundament offline w Pythonie 3.12 — kontrakty danych, profile, zegary i ograniczony capture publicznego katalogu Crypto.com. G1 PASS oznacza wyłącznie poprawność fundamentu offline. Runtime pozostaje INCOMPLETE, V01–V11 UNKNOWN, a live BLOCKED. P02 dodaje lokalny accounting i trwały ledger PostgreSQL; system wykonywania zleceń pozostaje przyszłym etapem.
+P01: fundament offline w Pythonie 3.12 — kontrakty danych, profile, zegary i ograniczony capture publicznego katalogu Crypto.com. G1 PASS oznacza wyłącznie poprawność fundamentu offline. Runtime pozostaje INCOMPLETE, V01–V11 UNKNOWN, a live BLOCKED. P02 dodaje lokalny accounting i trwały ledger PostgreSQL; pełny runtime tradingowy pozostaje przyszłym etapem; częściowy P03 działa wyłącznie na fake exchange.
 
 ## Środowisko i sprawdzenie
 
@@ -82,3 +82,7 @@ Rezerwacje blokują wydanie zajętego cash/base/fee i wymagają aktualnej wersji
 Testy integracyjne nie są pomijane przy braku bazy: bez `P02_TEST_DSN` pełny suite celowo kończy się błędem konfiguracji. Każdy test tworzy losowy własny schemat i usuwa tylko ten schemat. Weryfikowane są również rollback przy awarii projekcji, dwa równoczesne writery, autocommit, DB append-only oraz odbudowa projekcji. Dowody i ograniczenia odbioru: [P02 runbook](docs/runbooks/p02-accounting-ledger.md).
 
 Generowane testy sprawdzają pełny replay po kolejnych zdarzeniach i na lokalnym środowisku mogą zająć około 2–3 minut. Ich deadline Hypothesis jest wyłączony: sprawdzają semantykę, bez kwalifikacji opóźnień ani przepustowości runtime live.
+
+## Lifecycle P03 offline
+
+P03.1–P03.6 obejmuje durable intents, obserwacje zleceń, ochronę, dwie jawne polityki wyjścia oraz single writer/fencing wyłącznie na fake exchange/PostgreSQL. **G3 PASS — fake/offline/PostgreSQL only. Live BLOCKED.** Finalny niezależny re-review HEAD `12dd667` potwierdził zamknięcie wcześniejszych findingów i poprawną semantykę FOK; historia wcześniejszych FAIL i corrective passów pozostaje w raporcie G3. P04 nie rozpoczęto. Default profiles pozostają wyłączone dla execution; V01–V11 UNKNOWN, live BLOCKED. Granice i wyniki: [P03.1–P03.2](docs/runbooks/p03-1-2-execution-lifecycle.md), [P03.3–P03.4](docs/runbooks/p03-3-4-protection-exits.md), [corrective review P03.3–P03.4](docs/runbooks/p03-3-4-corrective-review.md), [P03.5 ownership/fencing](docs/runbooks/p03-5-writer-ownership.md), [final verification P03 / G3](docs/runbooks/p03-final-verification.md).
