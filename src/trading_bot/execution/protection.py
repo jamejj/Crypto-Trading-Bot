@@ -93,10 +93,13 @@ class ProtectionClock:
 
 
 def terminal_partial(order):
-    return (
-        order.status in TERMINAL
-        and order.filled is not None
-        and ZERO < order.filled.amount < order.target.amount
+    # Local trades can lag a full terminal venue report. Only positive scoped
+    # terminal cumulative evidence proves a breached FOK semantic contract.
+    return any(
+        observation.terminal
+        and observation.status in TERMINAL
+        and ZERO < observation.cumulative_quantity.amount < order.target.amount
+        for observation in order.observations
     )
 
 

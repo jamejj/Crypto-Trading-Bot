@@ -424,11 +424,7 @@ class ExecutionRepository:
         # Retain positive terminal partial evidence even if late trades later
         # complete the target. Coverage/economic reconciliation is not clearance
         # of a breached FOK semantic contract.
-        partial_evidence = any(
-            obs.terminal and 0 < obs.cumulative_quantity.amount < state.target.amount
-            for obs in state.observations
-        )
-        if terminal_partial(state) or partial_evidence:
+        if terminal_partial(state):
             conn.execute(
                 "INSERT INTO execution_incidents "
                 "VALUES (%s,%s,'TERMINAL_PARTIAL_FOK',%s,%s::jsonb) "

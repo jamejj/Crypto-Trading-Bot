@@ -13,14 +13,12 @@ CREATE TABLE execution_incidents (
 INSERT INTO execution_incidents
 SELECT account_id,intent_id,'TERMINAL_PARTIAL_FOK',NULL,projection
 FROM execution_orders
-WHERE (
-    projection->>'status' IN ('FILLED','CANCELED','REJECTED','EXPIRED')
-    AND (projection->'filled'->'amount'->>'$decimal')::numeric > 0
-    AND (projection->'filled'->'amount'->>'$decimal')::numeric
-        < (projection->'target'->'amount'->>'$decimal')::numeric
-) OR EXISTS (
+-- A terminal projection with fewer local trades may only mean missing records.
+-- Never invent partial-FOK evidence from the local filled quantity.
+WHERE EXISTS (
     SELECT 1 FROM jsonb_array_elements(projection->'observations') AS obs
     WHERE obs->>'status' IN ('FILLED','CANCELED','REJECTED','EXPIRED')
+      AND obs->>'terminal' = 'true'
       AND (obs->'cumulative_quantity'->'amount'->>'$decimal')::numeric > 0
       AND (obs->'cumulative_quantity'->'amount'->>'$decimal')::numeric
           < (projection->'target'->'amount'->>'$decimal')::numeric

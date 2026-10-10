@@ -15,7 +15,72 @@ WriterGuard. Poniżej zachowano historyczne wyniki P03.6 jako zapis checkpointu,
 a corrective pass opisano osobno. Naprawy nie stanowią nowego G3 PASS: wymagany
 jest kolejny niezależny review. Nie wykonano merge ani P04.
 
-## Corrective pass po niezależnym adversarial review d33f716
+## Wąski corrective pass — terminal cumulative vs missing trades (2026-10-10)
+
+**G3 FAIL/BLOCKED — awaiting independent re-review. Live BLOCKED.**
+
+Niezależny re-review `51e4388` potwierdził wcześniejsze pięć napraw, ale znalazł
+nowy P1: terminalne `FILLED cumulative=4` z dopiero pierwszym lokalnym trade `2`
+było błędnie klasyfikowane jako trwałe naruszenie FOK. Pierwszy częściowy rekord
+trade nie dowodzi terminalnego partial. Fałszywy incident pozostawał po drugim
+trade, mimo poprawnego pełnego wykonania. Pierwsza gałąź seedowania `002e`
+powielała ten błąd przy upgrade.
+
+TDD: po poprawieniu fixture wymagającego jawnego assessment replacement,
+**2 behawioralne FAIL / 7 PASS** przed zmianą kodu: runtime terminal-first oraz
+upgrade pełnego terminal cumulative z chwilowo niekompletnymi trade records.
+Dodatkowy błąd fixture nie został zaliczony jako dowód RED. Po poprawce nowe
+9 regresji oraz wcześniejsze 16 corrective regresji przechodzą.
+
+`terminal_partial` wymaga teraz pozytywnego scoped terminal order evidence
+`0 < cumulative_quantity < target` i zachowuje taki dowód z historii observation.
+Nie opiera się na samym terminal status + lokalnym filled. Runtime korzysta z
+tej jednej klasyfikacji, bez alternatywnego skrótu. Istniejący missing-trades
+blocker i trwałe UNKNOWN/admission/reservation/fencing nie zostały zmienione.
+
+Nowe testy sprawdzają:
+
+- `FILLED cumulative=4 → trade 2 → trade 2`: przed drugim tradem admission jest
+  blokowane, ale liczba incidentów wynosi zero. Po pełnym reconciliation,
+  istniejącym serial replacement i potwierdzeniu coverage 4, admission działa
+  także przez nowy wrapper repozytorium.
+- `trade 2 → trade 2 → FILLED cumulative=4`: brak trwałego incidentu.
+- Terminal `CANCELED/REJECTED/EXPIRED cumulative=2`: incident powstaje od razu,
+  bez wymyślania filli; późniejsze realne trade records sumujące się do 4 oraz
+  restart wrappera nie odblokowują konta.
+- Upgrade rzeczywistego schematu pre-002e: fixture tworzy wyłącznie
+  001/002/002b/002c/002d, zapisuje stary event log/projection oraz prawdziwy P02
+  economic journal, a dopiero potem stosuje 002e. Nie tworzy i nie usuwa tabeli
+  incidentów, aby udawać upgrade. Cztery scenariusze: partial → incident;
+  partial z późnym pełnym targetem → incident; pełne cumulative z lokalnym
+  trade 2 → brak incidentu; pełne cumulative i komplet trade 4 → brak incidentu.
+  Niejednoznaczny stary submit bez oryginalnego window nadal wymaga manual
+  review; migracja nie wymyśla timestampów ani dowodów partial.
+
+Poprawiono `002e` zgodnie z zakresem tego niepołączonego, offline etapu. Zmiana
+nie usuwa ani nie kasuje żadnych istniejących incidentów w bazie, na której
+uruchomiono już starą wersję 002e. Ewentualne wcześniejsze fałszywe latches
+wymagają osobnego audytowanego review/recovery; nie dodano automatycznego
+clearance ani produkcyjnej migracji usuwającej evidence.
+
+Self-review: runtime i SQL używają pozytywnego terminal cumulative evidence;
+missing trades pozostają blockerem do reconciliation, realne fille/protection
+nie są usuwane, a terminal partial nie znika po late evidence. Pozostały diff
+jest ograniczony do regresji i raportu. Nie zmieniono specyfikacji, polityk
+wyjścia ani ownership. Nie wykonano merge, P04 lub operacji Crypto.com.
+
+Dowody końcowe:
+
+- Nowe regresje: **9 PASS**; nowe + poprzednie corrective: **25 PASS**.
+- Wymagany target P03.6: **60 PASS**, 3,92 s.
+- Pełny suite P01–P03: **308 PASS**, 156,01 s, bez skipów: 150 unit,
+  2 property, 131 real PostgreSQL integration, 25 fault tests.
+- Ruff check: **PASS**; format: **55 files already formatted**;
+  `git diff --check`: **PASS**.
+
+Wymagany kolejny niezależny re-review. **G3 pozostaje FAIL/BLOCKED.**
+
+## Historyczny corrective pass 51e4388 po review d33f716
 
 Zakres: P1.1–P1.4 oraz potwierdzony P2; bez P04, merge, nowych capability
 Crypto.com lub zmiany specyfikacji. Wszystkie cztery P1 i authentic-copy P2
