@@ -8,16 +8,37 @@ checkpointy `83ad40d`, `ed1a463`, `9f6ade9`, `167af5f` oraz naprawy P03.6.
 Nie wykonano merge ani P04. Nie używano credentials, prywatnych endpointów,
 UAT trading ani realnych transakcji. Testy nie kontaktują się z Crypto.com.
 
-**G3 FAIL/BLOCKED — historyczny G3 PASS na `d33f716` został obalony. Live BLOCKED.**
+**G3 PASS — fake/offline/PostgreSQL only. Live BLOCKED.**
 
-Niezależny adversarial review odtworzył cztery P1 oraz P2 authentic copied
-WriterGuard. Poniżej zachowano historyczne wyniki P03.6 jako zapis checkpointu,
-a corrective pass opisano osobno. Naprawy nie stanowią nowego G3 PASS: wymagany
-jest kolejny niezależny review. Nie wykonano merge ani P04.
+Aktualny verdict po finalnym niezależnym re-review kodu HEAD `12dd667`
+(2026-10-10). Review potwierdził:
 
-## Wąski corrective pass — terminal cumulative vs missing trades (2026-10-10)
+- zamknięcie wcześniejszych czterech P1 oraz P2 z corrective `51e4388`;
+- poprawne rozdzielenie terminal partial FOK od chwilowo brakujących trade records:
+  pełne cumulative daje tymczasowy blocker, prawdziwy partial pozostaje trwałym
+  incidentem również po późnych fillach;
+- zgodność semantyki runtime i migracji `002e`;
+- brak regresji w admission/no-retry/reservations/protection/replacement/fencing.
 
-**G3 FAIL/BLOCKED — awaiting independent re-review. Live BLOCKED.**
+Nie znaleziono otwartego P0/P1 ani safety-relevant P2 naruszającego E01–E05
+w zakresie finalnego wąskiego re-review. Świeże dowody: **66 regresji PASS**,
+**1 niezależna reprodukcja poprzedniego P1 PASS** oraz **4/4 scenariusze upgrade'u
+PASS**, także na danych zapisanych rzeczywistym kodem `d33f716`. Pełnego suite
+nie powtarzano podczas re-review; wcześniejszy wynik implementacji to 308 PASS.
+
+V01–V11 i realna semantyka Crypto.com pozostają niezaliczone. Nie wykonano merge
+ani P04. Niniejsza finalizacja zmienia wyłącznie dokumentację; kod objęty review
+pozostaje identyczny z `12dd667`.
+
+Historia: G3 PASS na `d33f716` został obalony przez niezależny review; corrective
+`51e4388` zamknął pierwotne findingi, ale wprowadził nowy P1 klasyfikacji FOK.
+`12dd667` naprawił ten P1 i pozostawał BLOCKED do zakończenia niezależnego
+re-review. Poniższe sekcje zachowują historyczne werdykty checkpointów;
+nie zastępują aktualnego końcowego verdictu powyżej.
+
+## Historyczny wąski corrective pass 12dd667 — terminal cumulative vs missing trades (2026-10-10)
+
+**Status w chwili corrective commita: G3 FAIL/BLOCKED — awaiting independent re-review. Live BLOCKED.**
 
 Niezależny re-review `51e4388` potwierdził wcześniejsze pięć napraw, ale znalazł
 nowy P1: terminalne `FILLED cumulative=4` z dopiero pierwszym lokalnym trade `2`
@@ -78,7 +99,8 @@ Dowody końcowe:
 - Ruff check: **PASS**; format: **55 files already formatted**;
   `git diff --check`: **PASS**.
 
-Wymagany kolejny niezależny re-review. **G3 pozostaje FAIL/BLOCKED.**
+Na tym checkpointcie wymagany był kolejny niezależny re-review: **G3 FAIL/BLOCKED**.
+Review zakończono później wynikiem PASS opisanym na początku raportu.
 
 ## Historyczny corrective pass 51e4388 po review d33f716
 
